@@ -97,7 +97,7 @@ class BiliClient:
             logger.error(f"刷新凭据失败: {e}")
         return False
 
-    async def start_refresh(
+    def start_refresh(
         self,
         on_refreshed: Optional[
             Callable[[Dict[str, Any] | None], Awaitable[None]]
@@ -113,7 +113,7 @@ class BiliClient:
         )
         return
 
-    async def get_user(self, uid: int) -> user.User:
+    def get_user(self, uid: int) -> user.User:
         """
         根据UID获取一个 User 对象。
         """
@@ -138,7 +138,7 @@ class BiliClient:
         """
         try:
             self._apply_proxy()
-            u: user.User = await self.get_user(uid)
+            u: user.User = self.get_user(uid)
             return await u.get_dynamics_new()
         except Exception as e:
             logger.error(f"获取用户动态失败 (UID: {uid}): {e}")
@@ -150,7 +150,7 @@ class BiliClient:
         DEPRECATED: 该方法已弃用，据反馈易引起412错误
         """
         try:
-            u: user.User = await self.get_user(uid)
+            u: user.User = self.get_user(uid)
             # 上游接口同u.get_user_info，即"https://api.bilibili.com/x/space/wbi/acc/info"，412的诱因
             return await u.get_live_info()
         except Exception as e:
@@ -178,7 +178,7 @@ class BiliClient:
         获取用户的基本信息。
         """
         try:
-            u: user.User = await self.get_user(uid)
+            u: user.User = self.get_user(uid)
             info = await u.get_user_info()
             return info, ""
         except Exception as e:

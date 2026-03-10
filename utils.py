@@ -11,7 +11,7 @@ from astrbot.api.all import *
 from PIL import Image as PILImage
 
 
-async def create_render_data() -> dict:
+def create_render_data() -> dict:
     return {
         "name": "",  # 图中header处用户名
         "avatar": "",  # 头像url
@@ -24,7 +24,7 @@ async def create_render_data() -> dict:
     }
 
 
-async def image_to_base64(image_source, mime_type: str = "image/png") -> str:
+def image_to_base64(image_source, mime_type: str = "image/png") -> str:
     """
     将图片对象或文件路径转为Base64 Data URI
     :param image_source: PIL Image对象 或 图片文件路径
@@ -47,7 +47,7 @@ async def image_to_base64(image_source, mime_type: str = "image/png") -> str:
     return f"data:{mime_type};base64,{base64_str}"
 
 
-async def create_qrcode(url):
+def create_qrcode(url):
     if not is_valid_url(url):
         return ""
     qr = qrcode.QRCode(
@@ -59,7 +59,7 @@ async def create_qrcode(url):
     qr.add_data(url)
     qr.make(fit=True)
     qr_image = qr.make_image(fill_color="#fb7299", back_color="white")
-    url = await image_to_base64(qr_image)
+    url = image_to_base64(qr_image)
     return url
 
 
@@ -90,7 +90,7 @@ def render_text_to_plain(text: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-async def parse_rich_text(summary, topic):
+def parse_rich_text(summary, topic):
     text = "<br>".join(filter(None, summary["text"].split("\n")))
     # 真正的话题
     if topic:
@@ -117,7 +117,7 @@ async def parse_rich_text(summary, topic):
     return text
 
 
-async def is_height_valid(img_path: str, max_height: int = 25000) -> bool:
+def is_height_valid(img_path: str, max_height: int = 25000) -> bool:
     """
     检查图片高度是否在允许范围内
     :param img_path: 图片文件路径

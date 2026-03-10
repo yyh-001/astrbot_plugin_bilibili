@@ -207,7 +207,7 @@ class DynamicListener:
         if dyn is None and not shared_payload:
             dyn = await self.bili_client.get_latest_dynamics(uid)
         if dyn:
-            result_list = await self._parse_and_filter_dynamics(dyn, sub_data)
+            result_list = self._parse_and_filter_dynamics(dyn, sub_data)
             sent = 0
             for render_data, dyn_id in reversed(result_list):
                 if render_data:
@@ -348,7 +348,7 @@ class DynamicListener:
         img_path = await self.renderer.render_dynamic(render_data)
         if img_path:
             url = render_data.get("url", "")
-            if await is_height_valid(img_path):
+            if is_height_valid(img_path):
                 ls = [Image.fromFileSystem(img_path)]
             else:
                 timestamp = int(time.time())
@@ -373,10 +373,10 @@ class DynamicListener:
         room_id = live_room.get("room_id", 0)
         link = f"https://live.bilibili.com/{room_id}"
 
-        render_data = await create_render_data()
-        render_data["banner"] = await image_to_base64(BANNER_PATH)
+        render_data = create_render_data()
+        render_data["banner"] = image_to_base64(BANNER_PATH)
         render_data["name"] = "AstrBot"
-        render_data["avatar"] = await image_to_base64(LOGO_PATH)
+        render_data["avatar"] = image_to_base64(LOGO_PATH)
         render_data["title"] = live_name
         render_data["url"] = link
         render_data["image_urls"] = [cover_url]
@@ -388,7 +388,7 @@ class DynamicListener:
             render_data["text"] = f"📣 你订阅的UP 「{user_name}」 下播了！"
             await self.data_manager.update_live_status(sub_user, sub_data["uid"], False)
         if render_data["text"]:
-            render_data["qrcode"] = await create_qrcode(link)
+            render_data["qrcode"] = create_qrcode(link)
             if not self.rai:
                 ls = self._compose_plain_push(render_data)
                 await self.context.send_message(
@@ -407,7 +407,7 @@ class DynamicListener:
                     sub_user, MessageEventResult(chain=ls).use_t2i(False)
                 )
 
-    async def _get_dynamic_items(self, dyn: Dict, data: Dict):
+    def _get_dynamic_items(self, dyn: Dict, data: Dict):
         """获取动态条目列表。"""
         last = data["last"]
         items = dyn["items"]
@@ -449,14 +449,14 @@ class DynamicListener:
 
         return False
 
-    async def _parse_and_filter_dynamics(self, dyn: Dict, data: Dict):
+    def _parse_and_filter_dynamics(self, dyn: Dict, data: Dict):
         """
         解析并过滤动态。
         """
         filter_types = data.get("filter_types", [])
         filter_regex = data.get("filter_regex", [])
         uid = data.get("uid", "")
-        items = await self._get_dynamic_items(dyn, data)  # 不含last及置顶的动态列表
+        items = self._get_dynamic_items(dyn, data)  # 不含last及置顶的动态列表
         result_list = []
         # 无新动态
         if not items:
@@ -467,21 +467,17 @@ class DynamicListener:
             item_type = item.get("type")
 
             if item_type == "DYNAMIC_TYPE_FORWARD":
-                result = await self._handle_forward_dynamic(
+                result = self._handle_forward_dynamic(
                     item, dyn_id, uid, filter_types, filter_regex
                 )
             elif item_type in ("DYNAMIC_TYPE_DRAW", "DYNAMIC_TYPE_WORD"):
-                result = await self._handle_draw_or_word_dynamic(
+                result = self._handle_draw_or_word_dynamic(
                     item, dyn_id, uid, filter_types, filter_regex
                 )
             elif item_type == "DYNAMIC_TYPE_AV":
-                result = await self._handle_video_dynamic(
-                    item, dyn_id, uid, filter_types
-                )
+                result = self._handle_video_dynamic(item, dyn_id, uid, filter_types)
             elif item_type == "DYNAMIC_TYPE_ARTICLE":
-                result = await self._handle_article_dynamic(
-                    item, dyn_id, uid, filter_types
-                )
+                result = self._handle_article_dynamic(item, dyn_id, uid, filter_types)
             else:
                 result = (None, None)
 
@@ -489,7 +485,7 @@ class DynamicListener:
 
         return result_list
 
-    async def _handle_forward_dynamic(
+    def _handle_forward_dynamic(
         self,
         item: Dict,
         dyn_id: str,
@@ -533,12 +529,12 @@ class DynamicListener:
         ):
             return (None, dyn_id)
 
-        render_data = await self.renderer.build_render_data(item)
+        render_data = self.renderer.build_render_data(item)
         render_data["uid"] = uid
         render_data["url"] = f"https://t.bilibili.com/{dyn_id}"
-        render_data["qrcode"] = await create_qrcode(render_data["url"])
+        render_data["qrcode"] = create_qrcode(render_data["url"])
 
-        render_forward = await self.renderer.build_render_data(
+        render_forward = self.renderer.build_render_data(
             item.get("orig", {}), is_forward=True
         )
         if render_forward.get("image_urls"):
@@ -546,7 +542,7 @@ class DynamicListener:
         render_data["forward"] = render_forward
         return (render_data, dyn_id)
 
-    async def _handle_draw_or_word_dynamic(
+    def _handle_draw_or_word_dynamic(
         self,
         item: Dict,
         dyn_id: str,
@@ -581,11 +577,11 @@ class DynamicListener:
         ):
             return (None, dyn_id)
 
-        render_data = await self.renderer.build_render_data(item)
+        render_data = self.renderer.build_render_data(item)
         render_data["uid"] = uid
         return (render_data, dyn_id)
 
-    async def _handle_video_dynamic(
+    def _handle_video_dynamic(
         self, item: Dict, dyn_id: str, uid: str, filter_types: List[str]
     ) -> tuple:
         """处理视频动态。"""
@@ -593,11 +589,11 @@ class DynamicListener:
             logger.info(f"视频类型在过滤列表 {filter_types} 中。")
             return (None, dyn_id)
 
-        render_data = await self.renderer.build_render_data(item)
+        render_data = self.renderer.build_render_data(item)
         render_data["uid"] = uid
         return (render_data, dyn_id)
 
-    async def _handle_article_dynamic(
+    def _handle_article_dynamic(
         self, item: Dict, dyn_id: str, uid: str, filter_types: List[str]
     ) -> tuple:
         """处理专栏文章动态。"""
@@ -610,6 +606,6 @@ class DynamicListener:
             logger.info(f"文章 {dyn_id} 为充电专属。")
             return (None, dyn_id)
 
-        render_data = await self.renderer.build_render_data(item)
+        render_data = self.renderer.build_render_data(item)
         render_data["uid"] = uid
         return (render_data, dyn_id)

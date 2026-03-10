@@ -33,7 +33,7 @@ from .data_manager import DataManager
 from .listener import DynamicListener
 from .renderer import Renderer
 from .tools.bangumi import BangumiTool
-from .utils import *
+from .utils import create_qrcode, create_render_data, image_to_base64, is_valid_umo
 
 
 @register("astrbot_plugin_bilibili", "Soulter", "", "", "")
@@ -158,7 +158,7 @@ class Main(Star):
                 current = " ← 当前" if tid == self.style else ""
                 lines.append(f"  • {tid}: {info['name']}{current}")
                 lines.append(f"    {info['description']}")
-            lines.append(f"\n使用 /卡片样式 <样式名> 切换")
+            lines.append("\n使用 /卡片样式 <样式名> 切换")
             return MessageEventResult().message("\n".join(lines))
 
         # 带参数：切换样式
@@ -209,9 +209,9 @@ class Main(Star):
             info = video_data["info"]
             online = video_data["online"]
 
-            render_data = await create_render_data()
+            render_data = create_render_data()
             render_data["name"] = "AstrBot"
-            render_data["avatar"] = await image_to_base64(LOGO_PATH)
+            render_data["avatar"] = image_to_base64(LOGO_PATH)
             render_data["title"] = info["title"]
             render_data["text"] = (
                 f"UP 主: {info['owner']['name']}<br>"
@@ -271,7 +271,7 @@ class Main(Star):
             dyn = await self.bili_client.get_latest_dynamics(int(uid))
             if dyn:
                 await self.data_manager.add_subscription(sub_user, _sub_data)
-                result_list = await self.dynamic_listener._parse_and_filter_dynamics(
+                result_list = self.dynamic_listener._parse_and_filter_dynamics(
                     dyn, _sub_data
                 )
                 for render_data, dyn_id in reversed(result_list):
@@ -302,10 +302,10 @@ class Main(Star):
             if filter_regex:
                 filter_desc += f"<br>过滤正则: {filter_regex}"
 
-            render_data = await create_render_data()
+            render_data = create_render_data()
             render_data["uid"] = uid
             render_data["name"] = "AstrBot"
-            render_data["avatar"] = await image_to_base64(LOGO_PATH)
+            render_data["avatar"] = image_to_base64(LOGO_PATH)
             render_data["text"] = (
                 f"📣 订阅成功！<br>"
                 f"UP 主: {name} | 性别: {sex}"
@@ -313,7 +313,7 @@ class Main(Star):
             )
             render_data["image_urls"] = [avatar]
             render_data["url"] = f"https://space.bilibili.com/{mid}"
-            render_data["qrcode"] = await create_qrcode(render_data["url"])
+            render_data["qrcode"] = create_qrcode(render_data["url"])
             if self.rai:
                 img_path = await self.renderer.render_dynamic(render_data)
                 if img_path:
@@ -421,7 +421,7 @@ class Main(Star):
             dyn = await self.bili_client.get_latest_dynamics(int(uid))
             if dyn:
                 await self.data_manager.add_subscription(umo, _sub_data)
-                result_list = await self.dynamic_listener._parse_and_filter_dynamics(
+                result_list = self.dynamic_listener._parse_and_filter_dynamics(
                     dyn, _sub_data
                 )
                 for _, dyn_id in reversed(result_list):
@@ -513,7 +513,7 @@ class Main(Star):
         if not dyn:
             return MessageEventResult().message("未获取到动态数据，请稍后重试。")
 
-        result_list = await self.dynamic_listener._parse_and_filter_dynamics(
+        result_list = self.dynamic_listener._parse_and_filter_dynamics(
             dyn,
             {
                 "uid": uid,

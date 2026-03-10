@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from typing import Any, Dict, List, Optional
@@ -43,9 +44,14 @@ class DataManager:
         with open(self.path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
 
+    @staticmethod
+    def _write_text(path: str, content: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+
     async def save(self):
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
+        payload = json.dumps(self.data, ensure_ascii=False, indent=2)
+        await asyncio.to_thread(self._write_text, self.path, payload)
 
     def get_all_subscriptions(self) -> Dict[str, List[Dict[str, Any]]]:
         """
