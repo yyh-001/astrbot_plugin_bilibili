@@ -1,4 +1,5 @@
 import base64
+import html
 import io
 import re
 from urllib.parse import urlparse
@@ -73,6 +74,20 @@ def is_valid_url(url: str) -> bool:
 def is_valid_umo(umo: str) -> bool:
     pattern = r"([^:]+):\s*([^:]+):\s*(.+)"
     return re.match(pattern, umo) is not None
+
+
+def render_text_to_plain(text: str) -> str:
+    """将渲染用的 HTML 片段转换为纯文本。"""
+    if not text:
+        return ""
+
+    plain = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    plain = re.sub(r"<a [^>]*>(.*?)</a>", r"\1", plain, flags=re.IGNORECASE)
+    plain = re.sub(r"<img [^>]*>", "", plain, flags=re.IGNORECASE)
+    plain = re.sub(r"</?[^>]+>", "", plain)
+    plain = html.unescape(plain)
+    lines = [line.strip() for line in plain.splitlines()]
+    return "\n".join(line for line in lines if line)
 
 
 async def parse_rich_text(summary, topic):

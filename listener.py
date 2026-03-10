@@ -14,7 +14,22 @@ from .bili_client import BiliClient
 from .constant import BANNER_PATH, LOGO_PATH
 from .data_manager import DataManager
 from .renderer import Renderer
-from .utils import create_qrcode, create_render_data, image_to_base64, is_height_valid
+from .utils import (
+    create_qrcode,
+    create_render_data,
+    image_to_base64,
+    is_height_valid,
+    render_text_to_plain,
+)
+
+PLAIN_PUSH_ACTIONS = {
+    "DYNAMIC_TYPE_AV": "投稿了新视频",
+    "DYNAMIC_TYPE_ARTICLE": "发布了新专栏动态",
+    "DYNAMIC_TYPE_DRAW": "发布了新图文动态",
+    "DYNAMIC_TYPE_FORWARD": "转发了新动态",
+    "DYNAMIC_TYPE_WORD": "发布了新动态",
+}
+VIDEO_BODY_PREFIX = "投稿了新视频"
 
 
 class DynamicListener:
@@ -218,21 +233,70 @@ class DynamicListener:
         if live_room:
             await self._handle_live_status(sub_user, sub_data, live_room)
 
-    def _compose_plain_dynamic(
-        self, render_data: Dict[str, Any], render_fail: bool = False
-    ):
-        """转换为纯文本消息链。"""
+    def _build_plain_header(self, render_data: Dict[str, Any], nested: bool) -> str:
+        render_type = render_data.get("type")
+        if not isinstance(render_type, str):
+            return ""
+
+        action = PLAIN_PUSH_ACTIONS.get(render_type)
         name = render_data.get("name")
-        summary = render_data.get("summary", "")
-        prefix_fail = [Plain("渲染图片失败了 (´;ω;`)\n")] if render_fail else []
-        ls = [
-            *prefix_fail,
-            Plain(f"📣 UP 主 「{name}」 发布了新图文动态:\n"),
-            Plain(summary),
-        ]
-        for pic in render_data.get("image_urls", []):
-            ls.append(Image.fromURL(pic))
-        return ls
+        if not action or not isinstance(name, str) or not name:
+            return ""
+
+        subject = "原动态作者" if nested else "UP 主"
+        return f"📣 {subject} 「{name}」 {action}:"
+
+    def _build_plain_body(self, render_data: Dict[str, Any]) -> str:
+        summary = (render_data.get("summary") or "").strip()
+        if summary:
+            return summary
+        plain_text = render_text_to_plain(render_data.get("text", ""))
+        if render_data.get("type") == "DYNAMIC_TYPE_AV" and plain_text.startswith(
+            VIDEO_BODY_PREFIX
+        ):
+            return plain_text.removeprefix(VIDEO_BODY_PREFIX).strip()
+        return plain_text
+
+    def _compose_plain_push(
+        self,
+        render_data: Dict[str, Any],
+        render_fail: bool = False,
+        nested: bool = False,
+    ) -> list:
+        """转换为非图片模式下的消息链。"""
+        chain = []
+        if render_fail and not nested:
+            chain.append(Plain("渲染图片失败了 (´;ω;`)\n"))
+
+        lines = list(
+            filter(
+                None,
+                [
+                    self._build_plain_header(render_data, nested),
+                    (
+                        f"标题: {render_data['title']}"
+                        if render_data.get("title")
+                        else ""
+                    ),
+                    self._build_plain_body(render_data),
+                ],
+            )
+        )
+        if lines:
+            chain.append(Plain("\n".join(lines)))
+
+        for pic in filter(None, render_data.get("image_urls", [])):
+            chain.append(Image.fromURL(pic))
+
+        forward_data = render_data.get("forward")
+        if forward_data:
+            chain.append(Plain("\n转发内容:\n"))
+            chain.extend(self._compose_plain_push(forward_data, nested=True))
+
+        url = render_data.get("url", "")
+        if url and not nested:
+            chain.append(Plain(f"\n{url}"))
+        return chain
 
     async def _send_dynamic(
         self, sub_user: str, chain_parts: list, send_node: bool = False
@@ -275,12 +339,8 @@ class DynamicListener:
             return
 
         send_node_flag = self.node
-        # 非图文混合模式
-        if not self.rai and render_data.get("type") in (
-            "DYNAMIC_TYPE_DRAW",
-            "DYNAMIC_TYPE_WORD",
-        ):
-            ls = self._compose_plain_dynamic(render_data)
+        if not self.rai:
+            ls = self._compose_plain_push(render_data)
             await self._send_dynamic(sub_user, ls, send_node_flag)
             self._cache_render(dyn_id, ls, send_node_flag)
             return
@@ -300,7 +360,7 @@ class DynamicListener:
             return
 
         logger.error("渲染图片失败，尝试发送纯文本消息")
-        ls = self._compose_plain_dynamic(render_data, render_fail=True)
+        ls = self._compose_plain_push(render_data, render_fail=True)
         await self._send_dynamic(sub_user, ls, send_node=True)
 
     async def _handle_live_status(self, sub_user: str, sub_data: Dict, live_room: Dict):
@@ -329,6 +389,12 @@ class DynamicListener:
             await self.data_manager.update_live_status(sub_user, sub_data["uid"], False)
         if render_data["text"]:
             render_data["qrcode"] = await create_qrcode(link)
+            if not self.rai:
+                ls = self._compose_plain_push(render_data)
+                await self.context.send_message(
+                    sub_user, MessageEventResult(chain=ls).use_t2i(False)
+                )
+                return
             img_path = await self.renderer.render_dynamic(render_data)
             if img_path:
                 await self.context.send_message(
@@ -336,13 +402,9 @@ class DynamicListener:
                     MessageChain().file_image(img_path).message(render_data["url"]),
                 )
             else:
-                text = "\n".join(filter(None, render_data.get("text", "").split("\n")))
+                ls = self._compose_plain_push(render_data, render_fail=True)
                 await self.context.send_message(
-                    sub_user,
-                    MessageChain()
-                    .message("渲染图片失败了 (´;ω;`)")
-                    .message(text)
-                    .url_image(cover_url),
+                    sub_user, MessageEventResult(chain=ls).use_t2i(False)
                 )
 
     async def _get_dynamic_items(self, dyn: Dict, data: Dict):

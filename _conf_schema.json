@@ -27,7 +27,7 @@
     "rai": {
         "description": "render_as_image",
         "type": "bool",
-        "hint": "是否以图片形式渲染输出(仅对图文动态生效)",
+        "hint": "是否以图片形式渲染动态与直播推送",
         "default": true
     },
     "renderer_template": {
@@ -40,7 +40,7 @@
     "node": {
         "description": "node",
         "type": "bool",
-        "hint": "是否以转发消息形式推送(仅对图文动态生效)",
+        "hint": "是否以转发消息形式推送动态消息",
         "default": false
     },
     "enable_parse_miniapp": {
