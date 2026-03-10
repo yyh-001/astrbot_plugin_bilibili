@@ -49,10 +49,7 @@ class DynamicListener:
         self.data_manager = data_manager
         self.bili_client = bili_client
         self.renderer = renderer
-        self.interval_mins = self._parse_float(
-            cfg.get("interval_mins"), 20, minimum=0.1
-        )
-        self.interval_secs = self.interval_mins * 60
+        self.interval_secs = max(1, int(cfg.get("interval_secs", 300)))
         self.task_gap_secs = self._parse_float(cfg.get("task_gap_secs"), 20, minimum=0)
         self.rai = cfg.get("rai", True)
         self.node = cfg.get("node", False)

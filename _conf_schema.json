@@ -11,12 +11,12 @@
         "hint": "Bilibili API 请求代理地址。示例: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080，留空则直连。",
         "default": ""
     },
-    "interval_mins": {
-        "description": "interval_mins",
+    "interval_secs": {
+        "description": "interval_secs",
         "type": "int",
-        "hint": "单个UP主任务的检测周期，分钟数",
+        "hint": "单个UP主任务的检测周期（秒）。",
         "obvious_hint": true,
-        "default": 5
+        "default": 300
     },
     "task_gap_secs": {
         "description": "task_gap_secs",
