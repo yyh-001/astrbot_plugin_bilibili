@@ -66,6 +66,7 @@ plugin i https://github.com/Soulter/astrbot_plugin_bilibili
   - `draw`：过滤掉图文动态。
   - `live`：过滤掉直播动态。
   - `forward_lottery`：过滤掉转发的互动抽奖动态。
+  - `live_atall`：可选项。开启后，在群聊中检测到“开播”通知时会尝试 `@全体成员`。
   - **正则表达式**：任何不属于上述关键字的字符串都将被视为正则表达式，用于过滤动态文本内容。
 
 **示例**：

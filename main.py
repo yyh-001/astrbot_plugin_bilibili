@@ -25,8 +25,10 @@ from .constant import (
     BV,
     CARD_TEMPLATES,
     DEFAULT_TEMPLATE,
+    LIVE_ATALL_OPTION,
     LOGO_PATH,
     VALID_FILTER_TYPES,
+    VALID_SUB_OPTIONS,
     get_template_names,
 )
 from .data_manager import DataManager
@@ -80,6 +82,42 @@ class Main(Star):
             self.dynamic_listener_task.cancel()
 
         self.dynamic_listener_task = asyncio.create_task(self.dynamic_listener.start())
+
+    @staticmethod
+    def _parse_sub_args(input_text: GreedyStr) -> tuple[List[str], List[str], bool]:
+        args = input_text.strip().split(" ") if input_text.strip() else []
+        filter_types: List[str] = []
+        filter_regex: List[str] = []
+        live_atall = False
+
+        for arg in args:
+            if arg in VALID_SUB_OPTIONS:
+                if arg == LIVE_ATALL_OPTION:
+                    live_atall = True
+                continue
+            if arg in VALID_FILTER_TYPES:
+                filter_types.append(arg)
+            else:
+                filter_regex.append(arg)
+
+        return filter_types, filter_regex, live_atall
+
+    @staticmethod
+    def _build_subscription_data(
+        uid: int,
+        filter_types: List[str],
+        filter_regex: List[str],
+        live_atall: bool,
+    ) -> dict:
+        return {
+            "uid": uid,
+            "last": "",
+            "is_live": False,
+            "filter_types": filter_types,
+            "filter_regex": filter_regex,
+            "recent_ids": [],
+            "live_atall": live_atall,
+        }
 
     @command("bili_login")
     @permission_type(PermissionType.ADMIN)
@@ -236,15 +274,7 @@ class Main(Star):
 
     @command("bili_sub", alias={"订阅动态"})
     async def dynamic_sub(self, event: AstrMessageEvent, uid: str, input: GreedyStr):
-        args = input.strip().split(" ") if input.strip() else []
-
-        filter_types: List[str] = []
-        filter_regex: List[str] = []
-        for arg in args:
-            if arg in VALID_FILTER_TYPES:
-                filter_types.append(arg)
-            else:
-                filter_regex.append(arg)
+        filter_types, filter_regex, live_atall = self._parse_sub_args(input)
 
         sub_user = event.unified_msg_origin
         if not uid.isdigit():
@@ -252,21 +282,19 @@ class Main(Star):
 
         # 检查是否已经存在该订阅
         if await self.data_manager.update_subscription(
-            sub_user, int(uid), filter_types, filter_regex
+            sub_user, int(uid), filter_types, filter_regex, live_atall
         ):
             # 如果已存在，更新其过滤条件
-            return MessageEventResult().message("该动态已订阅，已更新过滤条件。")
+            option_desc = "开启" if live_atall else "关闭"
+            return MessageEventResult().message(
+                f"该动态已订阅，已更新过滤条件。直播@全体: {option_desc}"
+            )
         # 以下为新增订阅
         try:
             # 构造新的订阅数据结构
-            _sub_data = {
-                "uid": int(uid),
-                "last": "",
-                "is_live": False,
-                "filter_types": filter_types,
-                "filter_regex": filter_regex,
-                "recent_ids": [],
-            }
+            _sub_data = self._build_subscription_data(
+                int(uid), filter_types, filter_regex, live_atall
+            )
             # 获取最新一条动态 (用于初始化 last_id)
             dyn = await self.bili_client.get_latest_dynamics(int(uid))
             if dyn:
@@ -301,6 +329,7 @@ class Main(Star):
                 filter_desc += f"<br>过滤类型: {', '.join(filter_types)}"
             if filter_regex:
                 filter_desc += f"<br>过滤正则: {filter_regex}"
+            filter_desc += f"<br>直播开播@全体: {'开启' if live_atall else '关闭'}"
 
             render_data = create_render_data()
             render_data["uid"] = uid
@@ -394,29 +423,20 @@ class Main(Star):
             return MessageEventResult().message(
                 "请提供正确的UMO与UID。使用 /sid 指令查看当前会话的 UMO 或参考 WebUI-自定义规则。"
             )
-        args = input.strip().split(" ") if input.strip() else []
-        filter_types: List[str] = []
-        filter_regex: List[str] = []
-        for arg in args:
-            if arg in VALID_FILTER_TYPES:
-                filter_types.append(arg)
-            else:
-                filter_regex.append(arg)
+        filter_types, filter_regex, live_atall = self._parse_sub_args(input)
 
         if await self.data_manager.update_subscription(
-            umo, int(uid), filter_types, filter_regex
+            umo, int(uid), filter_types, filter_regex, live_atall
         ):
-            return MessageEventResult().message("该动态已订阅，已更新过滤条件")
+            option_desc = "开启" if live_atall else "关闭"
+            return MessageEventResult().message(
+                f"该动态已订阅，已更新过滤条件。直播@全体: {option_desc}"
+            )
 
         try:
-            _sub_data = {
-                "uid": int(uid),
-                "last": "",
-                "is_live": False,
-                "filter_types": filter_types,
-                "filter_regex": filter_regex,
-                "recent_ids": [],
-            }
+            _sub_data = self._build_subscription_data(
+                int(uid), filter_types, filter_regex, live_atall
+            )
 
             dyn = await self.bili_client.get_latest_dynamics(int(uid))
             if dyn:

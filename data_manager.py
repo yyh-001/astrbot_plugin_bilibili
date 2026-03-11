@@ -95,7 +95,12 @@ class DataManager:
         await self.save()
 
     async def update_subscription(
-        self, sub_user: str, uid: int, filter_types: List[str], filter_regex: List[str]
+        self,
+        sub_user: str,
+        uid: int,
+        filter_types: List[str],
+        filter_regex: List[str],
+        live_atall: bool,
     ):
         """
         更新一个已存在的订阅的过滤条件。
@@ -104,6 +109,7 @@ class DataManager:
         if sub:
             sub["filter_types"] = filter_types
             sub["filter_regex"] = filter_regex
+            sub["live_atall"] = live_atall
             await self.save()
             return True
         return False

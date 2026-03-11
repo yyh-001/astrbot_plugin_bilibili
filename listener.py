@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from astrbot.api import logger
 from astrbot.api.all import *
-from astrbot.api.event import MessageChain, MessageEventResult
-from astrbot.api.message_components import File, Image, Node, Plain
+from astrbot.api.event import MessageEventResult
+from astrbot.api.message_components import AtAll, File, Image, Node, Plain
 
 from .bili_client import BiliClient
 from .constant import BANNER_PATH, LOGO_PATH
@@ -30,6 +30,8 @@ PLAIN_PUSH_ACTIONS = {
     "DYNAMIC_TYPE_WORD": "发布了新动态",
 }
 VIDEO_BODY_PREFIX = "投稿了新视频"
+GROUP_MESSAGE_TYPE = "GroupMessage"
+MIN_AT_ALL_REMAINING = 1
 
 
 class DynamicListener:
@@ -360,6 +362,78 @@ class DynamicListener:
         ls = self._compose_plain_push(render_data, render_fail=True)
         await self._send_dynamic(sub_user, ls, send_node=True)
 
+    @staticmethod
+    def _extract_group_session(sub_user: str) -> Optional[Tuple[str, str]]:
+        try:
+            platform_id, message_type, session_id = sub_user.split(":", 2)
+        except ValueError:
+            return None
+        if message_type != GROUP_MESSAGE_TYPE:
+            return None
+        group_id = session_id.split("_")[-1].strip()
+        if not group_id:
+            return None
+        return platform_id, group_id
+
+    @staticmethod
+    def _extract_action_data(action_result: Any) -> Dict[str, Any]:
+        if not isinstance(action_result, dict):
+            return {}
+        payload = action_result.get("data")
+        if isinstance(payload, dict):
+            return payload
+        return action_result
+
+    @staticmethod
+    def _prepend_atall(chain_parts: List[Any]) -> List[Any]:
+        return [AtAll(), Plain(" ")] + chain_parts
+
+    async def _should_send_live_atall(self, sub_user: str, enabled: bool) -> bool:
+        if not enabled:
+            return False
+
+        group_ctx = self._extract_group_session(sub_user)
+        if not group_ctx:
+            logger.info("live_atall 仅支持群聊会话，当前会话: %s", sub_user)
+            return False
+
+        platform_id, group_id = group_ctx
+        platform_inst = self.context.get_platform_inst(platform_id)
+        if not platform_inst:
+            logger.warning("live_atall 失败：找不到平台实例 %s", platform_id)
+            return False
+
+        client = platform_inst.get_client()
+        if not client or not hasattr(client, "call_action"):
+            logger.warning("live_atall 失败：平台 %s 不支持 call_action", platform_id)
+            return False
+
+        group_id_param: int | str = int(group_id) if group_id.isdigit() else group_id
+        remain_raw = await client.call_action(
+            "get_group_at_all_remain", group_id=group_id_param
+        )
+        remain_data = self._extract_action_data(remain_raw)
+        can_at_all = bool(remain_data.get("can_at_all"))
+        group_remain = int(remain_data.get("remain_at_all_count_for_group", 0) or 0)
+        self_remain_value = remain_data.get(
+            "remain_at_all_count_for_self",
+            remain_data.get("remain_at_all_count_for_uin", 0),
+        )
+        self_remain = int(self_remain_value or 0)
+
+        if not can_at_all:
+            logger.info("群 %s 当前不允许 @全体成员", group_id)
+            return False
+        if group_remain < MIN_AT_ALL_REMAINING or self_remain < MIN_AT_ALL_REMAINING:
+            logger.info(
+                "群 %s @全体次数不足: group=%s, self=%s",
+                group_id,
+                group_remain,
+                self_remain,
+            )
+            return False
+        return True
+
     async def _handle_live_status(self, sub_user: str, sub_data: Dict, live_room: Dict):
         """处理并发送直播状态变更通知。"""
         is_live = sub_data.get("is_live", False)
@@ -378,28 +452,39 @@ class DynamicListener:
         render_data["url"] = link
         render_data["image_urls"] = [cover_url]
         # live_status: 0：未开播    1：正在直播     2：轮播中
-        if live_room.get("live_status", "") == 1 and not is_live:
+        is_live_started = live_room.get("live_status", "") == 1 and not is_live
+        if is_live_started:
             render_data["text"] = f"📣 你订阅的UP 「{user_name}」 开播了！"
             await self.data_manager.update_live_status(sub_user, sub_data["uid"], True)
         if live_room.get("live_status", "") != 1 and is_live:
             render_data["text"] = f"📣 你订阅的UP 「{user_name}」 下播了！"
             await self.data_manager.update_live_status(sub_user, sub_data["uid"], False)
         if render_data["text"]:
+            with_atall = await self._should_send_live_atall(
+                sub_user,
+                bool(sub_data.get("live_atall", False)) and is_live_started,
+            )
             render_data["qrcode"] = create_qrcode(link)
             if not self.rai:
                 ls = self._compose_plain_push(render_data)
+                if with_atall:
+                    ls = self._prepend_atall(ls)
                 await self.context.send_message(
                     sub_user, MessageEventResult(chain=ls).use_t2i(False)
                 )
                 return
             img_path = await self.renderer.render_dynamic(render_data)
             if img_path:
+                image_chain = [Image.fromFileSystem(img_path), Plain(f"\n{link}")]
+                if with_atall:
+                    image_chain = self._prepend_atall(image_chain)
                 await self.context.send_message(
-                    sub_user,
-                    MessageChain().file_image(img_path).message(render_data["url"]),
+                    sub_user, MessageEventResult(chain=image_chain).use_t2i(False)
                 )
             else:
                 ls = self._compose_plain_push(render_data, render_fail=True)
+                if with_atall:
+                    ls = self._prepend_atall(ls)
                 await self.context.send_message(
                     sub_user, MessageEventResult(chain=ls).use_t2i(False)
                 )
