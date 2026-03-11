@@ -119,11 +119,11 @@ python dev_ui.py
 
 ## 更新日志
 
-## v1.5.4
-- 轮询策略优化，新增配置项 `task_gap_secs`（默认 20 秒），用于控制相邻 UID 任务的最小执行间隔，降低请求突发风险。
-- `interval_mins` 语义调整为“单个 UID 检测周期”。
-- 添加配置项用于设置代理，原因见[issue#72](https://github.com/Soulter/astrbot_plugin_bilibili/issues/72)
-- `/bili_sub_test`指令错误处理优化
+## v1.5.5
+- 增强`render_as_image`配置项，现对各种动态都生效。
+- 调整轮询周期配置项的语义，现以秒为单位。
+- 订阅时支持配置是否@全体成员，对开播推送生效。
+- 下播提醒添加时长信息。
 
 ‼️astrbot_plugin_bilibili >= v1.4.14 需要 Astrbot >= 4.5.2；原因是使用了Astrbot >= 4.5.2推荐的函数调用写法，而Astrbot >= 4.5.3修复了webui工具显示错误，推荐升级到Astrbot >= 4.5.3
 
