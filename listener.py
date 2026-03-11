@@ -7,14 +7,33 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from astrbot.api import logger
 from astrbot.api.all import *
-from astrbot.api.event import MessageChain, MessageEventResult
-from astrbot.api.message_components import File, Image, Node, Plain
+from astrbot.api.event import MessageEventResult
+from astrbot.api.message_components import AtAll, File, Image, Node, Plain
 
 from .bili_client import BiliClient
 from .constant import BANNER_PATH, LOGO_PATH
 from .data_manager import DataManager
 from .renderer import Renderer
-from .utils import create_qrcode, create_render_data, image_to_base64, is_height_valid
+from .utils import (
+    create_qrcode,
+    create_render_data,
+    image_to_base64,
+    is_height_valid,
+    render_text_to_plain,
+)
+
+PLAIN_PUSH_ACTIONS = {
+    "DYNAMIC_TYPE_AV": "投稿了新视频",
+    "DYNAMIC_TYPE_ARTICLE": "发布了新专栏动态",
+    "DYNAMIC_TYPE_DRAW": "发布了新图文动态",
+    "DYNAMIC_TYPE_FORWARD": "转发了新动态",
+    "DYNAMIC_TYPE_WORD": "发布了新动态",
+}
+VIDEO_BODY_PREFIX = "投稿了新视频"
+GROUP_MESSAGE_TYPE = "GroupMessage"
+MIN_AT_ALL_REMAINING = 1
+SECONDS_PER_MINUTE = 60
+SECONDS_PER_HOUR = 3600
 
 
 class DynamicListener:
@@ -34,10 +53,7 @@ class DynamicListener:
         self.data_manager = data_manager
         self.bili_client = bili_client
         self.renderer = renderer
-        self.interval_mins = self._parse_float(
-            cfg.get("interval_mins"), 20, minimum=0.1
-        )
-        self.interval_secs = self.interval_mins * 60
+        self.interval_secs = max(1, int(cfg.get("interval_secs", 300)))
         self.task_gap_secs = self._parse_float(cfg.get("task_gap_secs"), 20, minimum=0)
         self.rai = cfg.get("rai", True)
         self.node = cfg.get("node", False)
@@ -192,7 +208,7 @@ class DynamicListener:
         if dyn is None and not shared_payload:
             dyn = await self.bili_client.get_latest_dynamics(uid)
         if dyn:
-            result_list = await self._parse_and_filter_dynamics(dyn, sub_data)
+            result_list = self._parse_and_filter_dynamics(dyn, sub_data)
             sent = 0
             for render_data, dyn_id in reversed(result_list):
                 if render_data:
@@ -218,21 +234,70 @@ class DynamicListener:
         if live_room:
             await self._handle_live_status(sub_user, sub_data, live_room)
 
-    def _compose_plain_dynamic(
-        self, render_data: Dict[str, Any], render_fail: bool = False
-    ):
-        """转换为纯文本消息链。"""
+    def _build_plain_header(self, render_data: Dict[str, Any], nested: bool) -> str:
+        render_type = render_data.get("type")
+        if not isinstance(render_type, str):
+            return ""
+
+        action = PLAIN_PUSH_ACTIONS.get(render_type)
         name = render_data.get("name")
-        summary = render_data.get("summary", "")
-        prefix_fail = [Plain("渲染图片失败了 (´;ω;`)\n")] if render_fail else []
-        ls = [
-            *prefix_fail,
-            Plain(f"📣 UP 主 「{name}」 发布了新图文动态:\n"),
-            Plain(summary),
-        ]
-        for pic in render_data.get("image_urls", []):
-            ls.append(Image.fromURL(pic))
-        return ls
+        if not action or not isinstance(name, str) or not name:
+            return ""
+
+        subject = "原动态作者" if nested else "UP 主"
+        return f"📣 {subject} 「{name}」 {action}:"
+
+    def _build_plain_body(self, render_data: Dict[str, Any]) -> str:
+        summary = (render_data.get("summary") or "").strip()
+        if summary:
+            return summary
+        plain_text = render_text_to_plain(render_data.get("text", ""))
+        if render_data.get("type") == "DYNAMIC_TYPE_AV" and plain_text.startswith(
+            VIDEO_BODY_PREFIX
+        ):
+            return plain_text.removeprefix(VIDEO_BODY_PREFIX).strip()
+        return plain_text
+
+    def _compose_plain_push(
+        self,
+        render_data: Dict[str, Any],
+        render_fail: bool = False,
+        nested: bool = False,
+    ) -> list:
+        """转换为非图片模式下的消息链。"""
+        chain = []
+        if render_fail and not nested:
+            chain.append(Plain("渲染图片失败了 (´;ω;`)\n"))
+
+        lines = list(
+            filter(
+                None,
+                [
+                    self._build_plain_header(render_data, nested),
+                    (
+                        f"标题: {render_data['title']}"
+                        if render_data.get("title")
+                        else ""
+                    ),
+                    self._build_plain_body(render_data),
+                ],
+            )
+        )
+        if lines:
+            chain.append(Plain("\n".join(lines)))
+
+        for pic in filter(None, render_data.get("image_urls", [])):
+            chain.append(Image.fromURL(pic))
+
+        forward_data = render_data.get("forward")
+        if forward_data:
+            chain.append(Plain("\n转发内容:\n"))
+            chain.extend(self._compose_plain_push(forward_data, nested=True))
+
+        url = render_data.get("url", "")
+        if url and not nested:
+            chain.append(Plain(f"\n{url}"))
+        return chain
 
     async def _send_dynamic(
         self, sub_user: str, chain_parts: list, send_node: bool = False
@@ -275,12 +340,8 @@ class DynamicListener:
             return
 
         send_node_flag = self.node
-        # 非图文混合模式
-        if not self.rai and render_data.get("type") in (
-            "DYNAMIC_TYPE_DRAW",
-            "DYNAMIC_TYPE_WORD",
-        ):
-            ls = self._compose_plain_dynamic(render_data)
+        if not self.rai:
+            ls = self._compose_plain_push(render_data)
             await self._send_dynamic(sub_user, ls, send_node_flag)
             self._cache_render(dyn_id, ls, send_node_flag)
             return
@@ -288,7 +349,7 @@ class DynamicListener:
         img_path = await self.renderer.render_dynamic(render_data)
         if img_path:
             url = render_data.get("url", "")
-            if await is_height_valid(img_path):
+            if is_height_valid(img_path):
                 ls = [Image.fromFileSystem(img_path)]
             else:
                 timestamp = int(time.time())
@@ -300,12 +361,121 @@ class DynamicListener:
             return
 
         logger.error("渲染图片失败，尝试发送纯文本消息")
-        ls = self._compose_plain_dynamic(render_data, render_fail=True)
+        ls = self._compose_plain_push(render_data, render_fail=True)
         await self._send_dynamic(sub_user, ls, send_node=True)
+
+    @staticmethod
+    def _extract_group_session(sub_user: str) -> Optional[Tuple[str, str]]:
+        try:
+            platform_id, message_type, session_id = sub_user.split(":", 2)
+        except ValueError:
+            return None
+        if message_type != GROUP_MESSAGE_TYPE:
+            return None
+        group_id = session_id.split("_")[-1].strip()
+        if not group_id:
+            return None
+        return platform_id, group_id
+
+    @staticmethod
+    def _extract_action_data(action_result: Any) -> Dict[str, Any]:
+        if not isinstance(action_result, dict):
+            return {}
+        payload = action_result.get("data")
+        if isinstance(payload, dict):
+            return payload
+        return action_result
+
+    @staticmethod
+    def _prepend_atall(chain_parts: List[Any]) -> List[Any]:
+        return [AtAll(), Plain(" ")] + chain_parts
+
+    @staticmethod
+    def _parse_live_duration_seconds(live_room: Dict[str, Any]) -> int:
+        live_time = live_room.get("live_time", 0)
+        if isinstance(live_time, (int, float)):
+            return max(0, int(live_time))
+        if not isinstance(live_time, str):
+            return 0
+
+        stripped = live_time.strip()
+        if not stripped:
+            return 0
+        if stripped.isdigit():
+            return int(stripped)
+
+        parts = stripped.split(":")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            return 0
+        hours, minutes, seconds = (int(part) for part in parts)
+        return hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds
+
+    @staticmethod
+    def _format_live_duration_text(duration_seconds: int) -> str:
+        if duration_seconds <= 0:
+            return ""
+
+        hours = duration_seconds // SECONDS_PER_HOUR
+        minutes = (duration_seconds % SECONDS_PER_HOUR) // SECONDS_PER_MINUTE
+        seconds = duration_seconds % SECONDS_PER_MINUTE
+        if hours > 0:
+            return f"{hours}小时{minutes}分钟{seconds}秒"
+        if minutes > 0:
+            return f"{minutes}分钟{seconds}秒"
+        return f"{seconds}秒"
+
+    async def _should_send_live_atall(self, sub_user: str, enabled: bool) -> bool:
+        if not enabled:
+            return False
+
+        group_ctx = self._extract_group_session(sub_user)
+        if not group_ctx:
+            logger.info("live_atall 仅支持群聊会话，当前会话: %s", sub_user)
+            return False
+
+        platform_id, group_id = group_ctx
+        platform_inst = self.context.get_platform_inst(platform_id)
+        if not platform_inst:
+            logger.warning("live_atall 失败：找不到平台实例 %s", platform_id)
+            return False
+
+        client = platform_inst.get_client()
+        if not client or not hasattr(client, "call_action"):
+            logger.warning("live_atall 失败：平台 %s 不支持 call_action", platform_id)
+            return False
+
+        group_id_param: int | str = int(group_id) if group_id.isdigit() else group_id
+        remain_raw = await client.call_action(
+            "get_group_at_all_remain", group_id=group_id_param
+        )
+        remain_data = self._extract_action_data(remain_raw)
+        can_at_all = bool(remain_data.get("can_at_all"))
+        group_remain = int(remain_data.get("remain_at_all_count_for_group", 0) or 0)
+        self_remain_value = remain_data.get(
+            "remain_at_all_count_for_self",
+            remain_data.get("remain_at_all_count_for_uin", 0),
+        )
+        self_remain = int(self_remain_value or 0)
+
+        if not can_at_all:
+            logger.info("群 %s 当前不允许 @全体成员", group_id)
+            return False
+        if group_remain < MIN_AT_ALL_REMAINING or self_remain < MIN_AT_ALL_REMAINING:
+            logger.info(
+                "群 %s @全体次数不足: group=%s, self=%s",
+                group_id,
+                group_remain,
+                self_remain,
+            )
+            return False
+        return True
 
     async def _handle_live_status(self, sub_user: str, sub_data: Dict, live_room: Dict):
         """处理并发送直播状态变更通知。"""
         is_live = sub_data.get("is_live", False)
+        current_live_seconds = self._parse_live_duration_seconds(live_room)
+        if live_room.get("live_status", "") == 1 and current_live_seconds > 0:
+            sub_data["last_live_duration_seconds"] = current_live_seconds
 
         live_name = live_room.get("title", "Unknown")
         user_name = live_room.get("uname", "Unknown")
@@ -313,39 +483,65 @@ class DynamicListener:
         room_id = live_room.get("room_id", 0)
         link = f"https://live.bilibili.com/{room_id}"
 
-        render_data = await create_render_data()
-        render_data["banner"] = await image_to_base64(BANNER_PATH)
+        render_data = create_render_data()
+        render_data["banner"] = image_to_base64(BANNER_PATH)
         render_data["name"] = "AstrBot"
-        render_data["avatar"] = await image_to_base64(LOGO_PATH)
+        render_data["avatar"] = image_to_base64(LOGO_PATH)
         render_data["title"] = live_name
         render_data["url"] = link
         render_data["image_urls"] = [cover_url]
         # live_status: 0：未开播    1：正在直播     2：轮播中
-        if live_room.get("live_status", "") == 1 and not is_live:
+        is_live_started = live_room.get("live_status", "") == 1 and not is_live
+        if is_live_started:
+            sub_data["last_live_duration_seconds"] = 0
             render_data["text"] = f"📣 你订阅的UP 「{user_name}」 开播了！"
             await self.data_manager.update_live_status(sub_user, sub_data["uid"], True)
         if live_room.get("live_status", "") != 1 and is_live:
-            render_data["text"] = f"📣 你订阅的UP 「{user_name}」 下播了！"
-            await self.data_manager.update_live_status(sub_user, sub_data["uid"], False)
-        if render_data["text"]:
-            render_data["qrcode"] = await create_qrcode(link)
-            img_path = await self.renderer.render_dynamic(render_data)
-            if img_path:
-                await self.context.send_message(
-                    sub_user,
-                    MessageChain().file_image(img_path).message(render_data["url"]),
+            live_duration_seconds = max(
+                current_live_seconds,
+                int(sub_data.get("last_live_duration_seconds", 0) or 0),
+            )
+            duration_text = self._format_live_duration_text(live_duration_seconds)
+            if duration_text:
+                render_data["text"] = (
+                    f"📣 你订阅的UP 「{user_name}」 下播了！<br>"
+                    f"本场直播时长：{duration_text}"
                 )
             else:
-                text = "\n".join(filter(None, render_data.get("text", "").split("\n")))
+                render_data["text"] = f"📣 你订阅的UP 「{user_name}」 下播了！"
+            sub_data["last_live_duration_seconds"] = 0
+            await self.data_manager.update_live_status(sub_user, sub_data["uid"], False)
+        if render_data["text"]:
+            with_atall = await self._should_send_live_atall(
+                sub_user,
+                bool(sub_data.get("live_atall", False)) and is_live_started,
+            )
+            render_data["qrcode"] = create_qrcode(link)
+            if not self.rai:
+                ls = self._compose_plain_push(render_data)
+                if with_atall:
+                    ls = self._prepend_atall(ls)
                 await self.context.send_message(
-                    sub_user,
-                    MessageChain()
-                    .message("渲染图片失败了 (´;ω;`)")
-                    .message(text)
-                    .url_image(cover_url),
+                    sub_user, MessageEventResult(chain=ls).use_t2i(False)
+                )
+                return
+            img_path = await self.renderer.render_dynamic(render_data)
+            if img_path:
+                image_chain = [Image.fromFileSystem(img_path), Plain(f"\n{link}")]
+                if with_atall:
+                    image_chain = self._prepend_atall(image_chain)
+                await self.context.send_message(
+                    sub_user, MessageEventResult(chain=image_chain).use_t2i(False)
+                )
+            else:
+                ls = self._compose_plain_push(render_data, render_fail=True)
+                if with_atall:
+                    ls = self._prepend_atall(ls)
+                await self.context.send_message(
+                    sub_user, MessageEventResult(chain=ls).use_t2i(False)
                 )
 
-    async def _get_dynamic_items(self, dyn: Dict, data: Dict):
+    def _get_dynamic_items(self, dyn: Dict, data: Dict):
         """获取动态条目列表。"""
         last = data["last"]
         items = dyn["items"]
@@ -387,14 +583,14 @@ class DynamicListener:
 
         return False
 
-    async def _parse_and_filter_dynamics(self, dyn: Dict, data: Dict):
+    def _parse_and_filter_dynamics(self, dyn: Dict, data: Dict):
         """
         解析并过滤动态。
         """
         filter_types = data.get("filter_types", [])
         filter_regex = data.get("filter_regex", [])
         uid = data.get("uid", "")
-        items = await self._get_dynamic_items(dyn, data)  # 不含last及置顶的动态列表
+        items = self._get_dynamic_items(dyn, data)  # 不含last及置顶的动态列表
         result_list = []
         # 无新动态
         if not items:
@@ -405,21 +601,17 @@ class DynamicListener:
             item_type = item.get("type")
 
             if item_type == "DYNAMIC_TYPE_FORWARD":
-                result = await self._handle_forward_dynamic(
+                result = self._handle_forward_dynamic(
                     item, dyn_id, uid, filter_types, filter_regex
                 )
             elif item_type in ("DYNAMIC_TYPE_DRAW", "DYNAMIC_TYPE_WORD"):
-                result = await self._handle_draw_or_word_dynamic(
+                result = self._handle_draw_or_word_dynamic(
                     item, dyn_id, uid, filter_types, filter_regex
                 )
             elif item_type == "DYNAMIC_TYPE_AV":
-                result = await self._handle_video_dynamic(
-                    item, dyn_id, uid, filter_types
-                )
+                result = self._handle_video_dynamic(item, dyn_id, uid, filter_types)
             elif item_type == "DYNAMIC_TYPE_ARTICLE":
-                result = await self._handle_article_dynamic(
-                    item, dyn_id, uid, filter_types
-                )
+                result = self._handle_article_dynamic(item, dyn_id, uid, filter_types)
             else:
                 result = (None, None)
 
@@ -427,7 +619,7 @@ class DynamicListener:
 
         return result_list
 
-    async def _handle_forward_dynamic(
+    def _handle_forward_dynamic(
         self,
         item: Dict,
         dyn_id: str,
@@ -471,12 +663,12 @@ class DynamicListener:
         ):
             return (None, dyn_id)
 
-        render_data = await self.renderer.build_render_data(item)
+        render_data = self.renderer.build_render_data(item)
         render_data["uid"] = uid
         render_data["url"] = f"https://t.bilibili.com/{dyn_id}"
-        render_data["qrcode"] = await create_qrcode(render_data["url"])
+        render_data["qrcode"] = create_qrcode(render_data["url"])
 
-        render_forward = await self.renderer.build_render_data(
+        render_forward = self.renderer.build_render_data(
             item.get("orig", {}), is_forward=True
         )
         if render_forward.get("image_urls"):
@@ -484,7 +676,7 @@ class DynamicListener:
         render_data["forward"] = render_forward
         return (render_data, dyn_id)
 
-    async def _handle_draw_or_word_dynamic(
+    def _handle_draw_or_word_dynamic(
         self,
         item: Dict,
         dyn_id: str,
@@ -519,11 +711,11 @@ class DynamicListener:
         ):
             return (None, dyn_id)
 
-        render_data = await self.renderer.build_render_data(item)
+        render_data = self.renderer.build_render_data(item)
         render_data["uid"] = uid
         return (render_data, dyn_id)
 
-    async def _handle_video_dynamic(
+    def _handle_video_dynamic(
         self, item: Dict, dyn_id: str, uid: str, filter_types: List[str]
     ) -> tuple:
         """处理视频动态。"""
@@ -531,11 +723,11 @@ class DynamicListener:
             logger.info(f"视频类型在过滤列表 {filter_types} 中。")
             return (None, dyn_id)
 
-        render_data = await self.renderer.build_render_data(item)
+        render_data = self.renderer.build_render_data(item)
         render_data["uid"] = uid
         return (render_data, dyn_id)
 
-    async def _handle_article_dynamic(
+    def _handle_article_dynamic(
         self, item: Dict, dyn_id: str, uid: str, filter_types: List[str]
     ) -> tuple:
         """处理专栏文章动态。"""
@@ -548,6 +740,6 @@ class DynamicListener:
             logger.info(f"文章 {dyn_id} 为充电专属。")
             return (None, dyn_id)
 
-        render_data = await self.renderer.build_render_data(item)
+        render_data = self.renderer.build_render_data(item)
         render_data["uid"] = uid
         return (render_data, dyn_id)

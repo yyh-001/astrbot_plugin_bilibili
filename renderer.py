@@ -14,7 +14,7 @@ from .constant import (
     RETRY_DELAY,
     get_template_path,
 )
-from .utils import *
+from .utils import create_qrcode, create_render_data, image_to_base64, parse_rich_text
 
 
 def load_template(style: str) -> str:
@@ -101,15 +101,13 @@ class Renderer:
 
         return None  # 所有尝试都失败
 
-    async def build_render_data(
-        self, item: Dict, is_forward: bool = False
-    ) -> Dict[str, Any]:
+    def build_render_data(self, item: Dict, is_forward: bool = False) -> Dict[str, Any]:
         """
         根据从B站API获取的单个动态项目，构建用于渲染的字典。
         is_forward: 标记是否正在处理转发动态
         """
-        render_data = await create_render_data()
-        render_data["banner"] = await image_to_base64(BANNER_PATH)
+        render_data = create_render_data()
+        render_data["banner"] = image_to_base64(BANNER_PATH)
         # 用户名称、头像、挂件
         author_module = item.get("modules", {}).get("module_author") or {}
         render_data["name"] = author_module.get("name")
@@ -131,7 +129,7 @@ class Renderer:
                 content_text = None  # 或默认值
 
             if content_text:
-                rich_text = await parse_rich_text(
+                rich_text = parse_rich_text(
                     item["modules"]["module_dynamic"]["desc"],
                     item["modules"]["module_dynamic"]["topic"],
                 )
@@ -142,7 +140,7 @@ class Renderer:
             render_data["image_urls"] = [cover_url]
             if not is_forward:
                 url = f"https://www.bilibili.com/video/{bv}"
-                render_data["qrcode"] = await create_qrcode(url)
+                render_data["qrcode"] = create_qrcode(url)
                 render_data["url"] = url
             # logger.info(f"返回视频动态 {dyn_id}。")
             return render_data
@@ -158,14 +156,14 @@ class Renderer:
             topic = item["modules"]["module_dynamic"]["topic"]
 
             render_data["summary"] = summary["text"]
-            render_data["text"] = await parse_rich_text(summary, topic)
+            render_data["text"] = parse_rich_text(summary, topic)
             render_data["title"] = opus["title"]
             render_data["image_urls"] = [pic["url"] for pic in opus["pics"][:9]]
             if not render_data["image_urls"] and self.rai:
-                render_data["image_urls"] = [await image_to_base64(LOGO_PATH)]
+                render_data["image_urls"] = [image_to_base64(LOGO_PATH)]
             if not is_forward:
                 url = f"https:{jump_url}"
-                render_data["qrcode"] = await create_qrcode(url)
+                render_data["qrcode"] = create_qrcode(url)
                 render_data["url"] = url
             # logger.info(f"返回图文动态 {dyn_id}。")
             return render_data
@@ -176,7 +174,7 @@ class Renderer:
             except (TypeError, KeyError):
                 content_text = None
             if content_text:
-                rich_text = await parse_rich_text(
+                rich_text = parse_rich_text(
                     item["modules"]["module_dynamic"]["desc"],
                     item["modules"]["module_dynamic"]["topic"],
                 )
