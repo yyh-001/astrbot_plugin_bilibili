@@ -32,6 +32,8 @@ PLAIN_PUSH_ACTIONS = {
 VIDEO_BODY_PREFIX = "投稿了新视频"
 GROUP_MESSAGE_TYPE = "GroupMessage"
 MIN_AT_ALL_REMAINING = 1
+SECONDS_PER_MINUTE = 60
+SECONDS_PER_HOUR = 3600
 
 
 class DynamicListener:
@@ -388,6 +390,40 @@ class DynamicListener:
     def _prepend_atall(chain_parts: List[Any]) -> List[Any]:
         return [AtAll(), Plain(" ")] + chain_parts
 
+    @staticmethod
+    def _parse_live_duration_seconds(live_room: Dict[str, Any]) -> int:
+        live_time = live_room.get("live_time", 0)
+        if isinstance(live_time, (int, float)):
+            return max(0, int(live_time))
+        if not isinstance(live_time, str):
+            return 0
+
+        stripped = live_time.strip()
+        if not stripped:
+            return 0
+        if stripped.isdigit():
+            return int(stripped)
+
+        parts = stripped.split(":")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            return 0
+        hours, minutes, seconds = (int(part) for part in parts)
+        return hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds
+
+    @staticmethod
+    def _format_live_duration_text(duration_seconds: int) -> str:
+        if duration_seconds <= 0:
+            return ""
+
+        hours = duration_seconds // SECONDS_PER_HOUR
+        minutes = (duration_seconds % SECONDS_PER_HOUR) // SECONDS_PER_MINUTE
+        seconds = duration_seconds % SECONDS_PER_MINUTE
+        if hours > 0:
+            return f"{hours}小时{minutes}分钟{seconds}秒"
+        if minutes > 0:
+            return f"{minutes}分钟{seconds}秒"
+        return f"{seconds}秒"
+
     async def _should_send_live_atall(self, sub_user: str, enabled: bool) -> bool:
         if not enabled:
             return False
@@ -437,6 +473,9 @@ class DynamicListener:
     async def _handle_live_status(self, sub_user: str, sub_data: Dict, live_room: Dict):
         """处理并发送直播状态变更通知。"""
         is_live = sub_data.get("is_live", False)
+        current_live_seconds = self._parse_live_duration_seconds(live_room)
+        if live_room.get("live_status", "") == 1 and current_live_seconds > 0:
+            sub_data["last_live_duration_seconds"] = current_live_seconds
 
         live_name = live_room.get("title", "Unknown")
         user_name = live_room.get("uname", "Unknown")
@@ -454,10 +493,23 @@ class DynamicListener:
         # live_status: 0：未开播    1：正在直播     2：轮播中
         is_live_started = live_room.get("live_status", "") == 1 and not is_live
         if is_live_started:
+            sub_data["last_live_duration_seconds"] = 0
             render_data["text"] = f"📣 你订阅的UP 「{user_name}」 开播了！"
             await self.data_manager.update_live_status(sub_user, sub_data["uid"], True)
         if live_room.get("live_status", "") != 1 and is_live:
-            render_data["text"] = f"📣 你订阅的UP 「{user_name}」 下播了！"
+            live_duration_seconds = max(
+                current_live_seconds,
+                int(sub_data.get("last_live_duration_seconds", 0) or 0),
+            )
+            duration_text = self._format_live_duration_text(live_duration_seconds)
+            if duration_text:
+                render_data["text"] = (
+                    f"📣 你订阅的UP 「{user_name}」 下播了！<br>"
+                    f"本场直播时长：{duration_text}"
+                )
+            else:
+                render_data["text"] = f"📣 你订阅的UP 「{user_name}」 下播了！"
+            sub_data["last_live_duration_seconds"] = 0
             await self.data_manager.update_live_status(sub_user, sub_data["uid"], False)
         if render_data["text"]:
             with_atall = await self._should_send_live_atall(
