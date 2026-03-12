@@ -11,19 +11,6 @@ from astrbot.api.all import *
 from PIL import Image as PILImage
 
 
-def create_render_data() -> dict:
-    return {
-        "name": "",  # 图中header处用户名
-        "avatar": "",  # 头像url
-        "pendant": "",  # 头像框
-        "text": "",  # 正文
-        "image_urls": [],  # 正文图片url列表
-        "qrcode": "",  # qrcode url(base64)
-        "url": "",  # 用于渲染qrcode，也用于构成massagechain
-        "title": "",  # 标题(视频标题、动态标题)
-    }
-
-
 def image_to_base64(image_source, mime_type: str = "image/png") -> str:
     """
     将图片对象或文件路径转为Base64 Data URI

@@ -18,7 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from jinja2 import Template
 
-from constant import CARD_TEMPLATES, DEFAULT_TEMPLATE, get_template_path
+from core.constant import CARD_TEMPLATES, DEFAULT_TEMPLATE, get_template_path
 from dev.mock_data import get_scenario_by_name, get_scenarios_by_category
 
 

@@ -10,17 +10,17 @@ from astrbot.api.all import *
 from astrbot.api.event import MessageEventResult
 from astrbot.api.message_components import AtAll, File, Image, Node, Plain
 
-from .bili_client import BiliClient
-from .constant import BANNER_PATH, LOGO_PATH
-from .data_manager import DataManager
-from .renderer import Renderer
-from .utils import (
+from ..bili_client import BiliClient
+from ..core.constant import BANNER_PATH, LOGO_PATH
+from ..core.data_manager import DataManager
+from ..core.models import DynamicParseResult, RenderPayload, SubscriptionRecord
+from ..core.utils import (
     create_qrcode,
-    create_render_data,
     image_to_base64,
     is_height_valid,
     render_text_to_plain,
 )
+from .renderer import Renderer
 
 PLAIN_PUSH_ACTIONS = {
     "DYNAMIC_TYPE_AV": "投稿了新视频",
@@ -122,14 +122,14 @@ class DynamicListener:
             return default
         return max(parsed, minimum)
 
-    def _build_uid_targets(self) -> Dict[int, List[Tuple[str, Dict[str, Any]]]]:
+    def _build_uid_targets(self) -> Dict[int, List[Tuple[str, SubscriptionRecord]]]:
         """构建 UID -> 订阅目标列表 的映射，用于 UID 级去重请求。"""
-        uid_targets: Dict[int, List[Tuple[str, Dict[str, Any]]]] = {}
+        uid_targets: Dict[int, List[Tuple[str, SubscriptionRecord]]] = {}
         all_subs = self.data_manager.get_all_subscriptions()
 
         for sub_user, sub_list in all_subs.items():
             for sub_data in sub_list or []:
-                uid = sub_data.get("uid")
+                uid = sub_data.uid
                 try:
                     uid_int = int(uid)
                 except (TypeError, ValueError):
@@ -140,7 +140,7 @@ class DynamicListener:
         return uid_targets
 
     async def _run_uid_task(
-        self, uid: int, targets: List[Tuple[str, Dict[str, Any]]]
+        self, uid: int, targets: List[Tuple[str, SubscriptionRecord]]
     ) -> None:
         """执行单个 UID 的任务：动态/直播仅请求一次，再按订阅分发。"""
         if not targets:
@@ -155,8 +155,7 @@ class DynamicListener:
             dyn = None
 
         should_check_live = any(
-            "live" not in (sub_data.get("filter_types") or [])
-            for _, sub_data in targets
+            "live" not in sub_data.filter_types for _, sub_data in targets
         )
         live_room = None
         if should_check_live:
@@ -183,26 +182,19 @@ class DynamicListener:
                 raise
             except Exception as e:
                 logger.error(
-                    f"处理订阅者 {sub_user} 的 UP主 {sub_data.get('uid', '未知UID')} 时发生未知错误: {e}\n{traceback.format_exc()}"
+                    f"处理订阅者 {sub_user} 的 UP主 {sub_data.uid} 时发生未知错误: {e}\n{traceback.format_exc()}"
                 )
 
     async def _check_single_up(
         self,
         sub_user: str,
-        sub_data: Dict[str, Any],
+        sub_data: SubscriptionRecord,
         dyn: Optional[Dict[str, Any]] = None,
         live_room: Optional[Dict[str, Any]] = None,
         shared_payload: bool = False,
     ):
         """检查单个订阅的UP主是否有更新。"""
-        uid = sub_data.get("uid")
-        if uid is None:
-            return
-
-        try:
-            uid = int(uid)
-        except (TypeError, ValueError):
-            return
+        uid = int(sub_data.uid)
 
         # 检查动态更新
         if dyn is None and not shared_payload:
@@ -210,22 +202,24 @@ class DynamicListener:
         if dyn:
             result_list = self._parse_and_filter_dynamics(dyn, sub_data)
             sent = 0
-            for render_data, dyn_id in reversed(result_list):
-                if render_data:
+            for result in reversed(result_list):
+                if result.has_payload():
                     if sent < self.dynamic_limit:
                         sent += 1
-                        await self._handle_new_dynamic(sub_user, render_data, dyn_id)
+                        await self._handle_new_dynamic(
+                            sub_user, result.payload, result.dyn_id
+                        )
+                    if result.dyn_id:
+                        await self.data_manager.update_last_dynamic_id(
+                            sub_user, uid, result.dyn_id
+                        )
+                elif result.dyn_id:
                     await self.data_manager.update_last_dynamic_id(
-                        sub_user, uid, dyn_id
-                    )
-
-                elif dyn_id:  # 动态被过滤，只更新ID
-                    await self.data_manager.update_last_dynamic_id(
-                        sub_user, uid, dyn_id
+                        sub_user, uid, result.dyn_id
                     )
 
         # 检查直播状态
-        if "live" in sub_data.get("filter_types", []):
+        if "live" in sub_data.filter_types:
             return
 
         if live_room is None and not shared_payload:
@@ -234,25 +228,26 @@ class DynamicListener:
         if live_room:
             await self._handle_live_status(sub_user, sub_data, live_room)
 
-    def _build_plain_header(self, render_data: Dict[str, Any], nested: bool) -> str:
-        render_type = render_data.get("type")
+    def _build_plain_header(self, payload: Any, nested: bool) -> str:
+        render_type = payload.type
+        name = payload.name
+        if not isinstance(name, str):
+            name = ""
         if not isinstance(render_type, str):
-            return ""
+            render_type = ""
+        display_name = name.strip() or "未知作者"
 
-        action = PLAIN_PUSH_ACTIONS.get(render_type)
-        name = render_data.get("name")
-        if not action or not isinstance(name, str) or not name:
-            return ""
+        action = PLAIN_PUSH_ACTIONS.get(render_type, "发布了新动态")
 
         subject = "原动态作者" if nested else "UP 主"
-        return f"📣 {subject} 「{name}」 {action}:"
+        return f"📣 {subject} 「{display_name}」 {action}:"
 
-    def _build_plain_body(self, render_data: Dict[str, Any]) -> str:
-        summary = (render_data.get("summary") or "").strip()
+    def _build_plain_body(self, payload: Any) -> str:
+        summary = (payload.summary or "").strip()
         if summary:
             return summary
-        plain_text = render_text_to_plain(render_data.get("text", ""))
-        if render_data.get("type") == "DYNAMIC_TYPE_AV" and plain_text.startswith(
+        plain_text = render_text_to_plain(payload.text)
+        if payload.type == "DYNAMIC_TYPE_AV" and plain_text.startswith(
             VIDEO_BODY_PREFIX
         ):
             return plain_text.removeprefix(VIDEO_BODY_PREFIX).strip()
@@ -260,7 +255,7 @@ class DynamicListener:
 
     def _compose_plain_push(
         self,
-        render_data: Dict[str, Any],
+        payload: Any,
         render_fail: bool = False,
         nested: bool = False,
     ) -> list:
@@ -273,28 +268,26 @@ class DynamicListener:
             filter(
                 None,
                 [
-                    self._build_plain_header(render_data, nested),
-                    (
-                        f"标题: {render_data['title']}"
-                        if render_data.get("title")
-                        else ""
-                    ),
-                    self._build_plain_body(render_data),
+                    self._build_plain_header(payload, nested),
+                    (f"标题: {payload.title}" if payload.title else ""),
+                    self._build_plain_body(payload),
                 ],
             )
         )
         if lines:
             chain.append(Plain("\n".join(lines)))
 
-        for pic in filter(None, render_data.get("image_urls", [])):
+        for pic in filter(None, payload.image_urls):
             chain.append(Image.fromURL(pic))
 
-        forward_data = render_data.get("forward")
+        # 转发类型的转发部分会进入此分支
+        # [TODO] 此处"转发内容:"后的换行需要实现
+        forward_data = getattr(payload, "forward", None)
         if forward_data:
-            chain.append(Plain("\n转发内容:\n"))
+            chain.append(Plain("\u200b\n转发内容:"))
             chain.extend(self._compose_plain_push(forward_data, nested=True))
 
-        url = render_data.get("url", "")
+        url = payload.url
         if url and not nested:
             chain.append(Plain(f"\n{url}"))
         return chain
@@ -327,11 +320,11 @@ class DynamicListener:
     async def _handle_new_dynamic(
         self,
         sub_user: str,
-        render_data: Optional[Dict[str, Any]],
+        payload: Optional[RenderPayload],
         dyn_id: Optional[str] = None,
     ):
         """处理并发送新的动态通知。"""
-        if not render_data:
+        if not payload:
             return
 
         cached = self.render_cache.get(dyn_id) if dyn_id else None
@@ -341,14 +334,14 @@ class DynamicListener:
 
         send_node_flag = self.node
         if not self.rai:
-            ls = self._compose_plain_push(render_data)
+            ls = self._compose_plain_push(payload)
             await self._send_dynamic(sub_user, ls, send_node_flag)
             self._cache_render(dyn_id, ls, send_node_flag)
             return
 
-        img_path = await self.renderer.render_dynamic(render_data)
+        img_path = await self.renderer.render_dynamic(payload)
         if img_path:
-            url = render_data.get("url", "")
+            url = payload.url
             if is_height_valid(img_path):
                 ls = [Image.fromFileSystem(img_path)]
             else:
@@ -361,7 +354,7 @@ class DynamicListener:
             return
 
         logger.error("渲染图片失败，尝试发送纯文本消息")
-        ls = self._compose_plain_push(render_data, render_fail=True)
+        ls = self._compose_plain_push(payload, render_fail=True)
         await self._send_dynamic(sub_user, ls, send_node=True)
 
     @staticmethod
@@ -391,24 +384,22 @@ class DynamicListener:
         return [AtAll(), Plain(" ")] + chain_parts
 
     @staticmethod
-    def _parse_live_duration_seconds(live_room: Dict[str, Any]) -> int:
-        live_time = live_room.get("live_time", 0)
-        if isinstance(live_time, (int, float)):
-            return max(0, int(live_time))
-        if not isinstance(live_time, str):
+    def _parse_live_start_timestamp(live_room: Dict[str, Any]) -> int:
+        try:
+            live_start_ts = int(live_room.get("live_time", 0) or 0)
+        except (TypeError, ValueError):
             return 0
+        if live_start_ts <= 0:
+            return 0
+        return live_start_ts
 
-        stripped = live_time.strip()
-        if not stripped:
+    @staticmethod
+    def _calc_live_duration_seconds(current_ts: int, live_start_ts: int) -> int:
+        if current_ts <= 0 or live_start_ts <= 0:
             return 0
-        if stripped.isdigit():
-            return int(stripped)
-
-        parts = stripped.split(":")
-        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        if current_ts <= live_start_ts:
             return 0
-        hours, minutes, seconds = (int(part) for part in parts)
-        return hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds
+        return current_ts - live_start_ts
 
     @staticmethod
     def _format_live_duration_text(duration_seconds: int) -> str:
@@ -423,6 +414,57 @@ class DynamicListener:
         if minutes > 0:
             return f"{minutes}分钟{seconds}秒"
         return f"{seconds}秒"
+
+    @staticmethod
+    def _evaluate_live_transition(
+        sub_data: SubscriptionRecord, live_room: Dict[str, Any]
+    ) -> Tuple[bool, bool, bool]:
+        is_live_now = live_room.get("live_status", "") == 1
+        is_live_started = is_live_now and not sub_data.is_live
+        is_live_ended = (not is_live_now) and sub_data.is_live
+        return is_live_now, is_live_started, is_live_ended
+
+    @staticmethod
+    def _build_live_payload(live_room: Dict[str, Any], text: str) -> RenderPayload:
+        room_id = int(live_room.get("room_id", 0) or 0)
+        link = f"https://live.bilibili.com/{room_id}"
+        return RenderPayload(
+            banner=image_to_base64(BANNER_PATH),
+            name="AstrBot",
+            avatar=image_to_base64(LOGO_PATH),
+            title=str(live_room.get("title", "Unknown") or "Unknown"),
+            url=link,
+            qrcode=create_qrcode(link),
+            image_urls=[str(live_room.get("cover_from_user", "") or "")],
+            text=text,
+        )
+
+    async def _send_live_payload(
+        self, sub_user: str, payload: RenderPayload, with_atall: bool
+    ) -> None:
+        if not self.rai:
+            ls = self._compose_plain_push(payload)
+            if with_atall:
+                ls = self._prepend_atall(ls)
+            await self.context.send_message(
+                sub_user, MessageEventResult(chain=ls).use_t2i(False)
+            )
+            return
+        img_path = await self.renderer.render_dynamic(payload)
+        if img_path:
+            image_chain = [Image.fromFileSystem(img_path), Plain(f"\n{payload.url}")]
+            if with_atall:
+                image_chain = self._prepend_atall(image_chain)
+            await self.context.send_message(
+                sub_user, MessageEventResult(chain=image_chain).use_t2i(False)
+            )
+            return
+        ls = self._compose_plain_push(payload, render_fail=True)
+        if with_atall:
+            ls = self._prepend_atall(ls)
+        await self.context.send_message(
+            sub_user, MessageEventResult(chain=ls).use_t2i(False)
+        )
 
     async def _should_send_live_atall(self, sub_user: str, enabled: bool) -> bool:
         if not enabled:
@@ -470,82 +512,54 @@ class DynamicListener:
             return False
         return True
 
-    async def _handle_live_status(self, sub_user: str, sub_data: Dict, live_room: Dict):
+    async def _handle_live_status(
+        self, sub_user: str, sub_data: SubscriptionRecord, live_room: Dict[str, Any]
+    ):
         """处理并发送直播状态变更通知。"""
-        is_live = sub_data.get("is_live", False)
-        current_live_seconds = self._parse_live_duration_seconds(live_room)
-        if live_room.get("live_status", "") == 1 and current_live_seconds > 0:
-            sub_data["last_live_duration_seconds"] = current_live_seconds
+        current_unix_ts = int(time.time())
+        is_live_now, is_live_started, is_live_ended = self._evaluate_live_transition(
+            sub_data, live_room
+        )
+        current_live_start_ts = self._parse_live_start_timestamp(live_room)
+        if is_live_now and current_live_start_ts > 0:
+            sub_data.last_live_start_ts = current_live_start_ts
 
-        live_name = live_room.get("title", "Unknown")
-        user_name = live_room.get("uname", "Unknown")
-        cover_url = live_room.get("cover_from_user", "")
-        room_id = live_room.get("room_id", 0)
-        link = f"https://live.bilibili.com/{room_id}"
-
-        render_data = create_render_data()
-        render_data["banner"] = image_to_base64(BANNER_PATH)
-        render_data["name"] = "AstrBot"
-        render_data["avatar"] = image_to_base64(LOGO_PATH)
-        render_data["title"] = live_name
-        render_data["url"] = link
-        render_data["image_urls"] = [cover_url]
-        # live_status: 0：未开播    1：正在直播     2：轮播中
-        is_live_started = live_room.get("live_status", "") == 1 and not is_live
+        user_name = str(live_room.get("uname", "Unknown") or "Unknown")
+        text = ""
         if is_live_started:
-            sub_data["last_live_duration_seconds"] = 0
-            render_data["text"] = f"📣 你订阅的UP 「{user_name}」 开播了！"
-            await self.data_manager.update_live_status(sub_user, sub_data["uid"], True)
-        if live_room.get("live_status", "") != 1 and is_live:
-            live_duration_seconds = max(
-                current_live_seconds,
-                int(sub_data.get("last_live_duration_seconds", 0) or 0),
+            if current_live_start_ts > 0:
+                sub_data.last_live_start_ts = current_live_start_ts
+            text = f"📣 你订阅的UP 「{user_name}」 开播了！"
+            await self.data_manager.update_live_status(sub_user, sub_data.uid, True)
+        if is_live_ended:
+            cached_live_start_ts = int(sub_data.last_live_start_ts or 0)
+            live_start_ts = max(current_live_start_ts, cached_live_start_ts)
+            live_duration_seconds = self._calc_live_duration_seconds(
+                current_unix_ts, live_start_ts
             )
             duration_text = self._format_live_duration_text(live_duration_seconds)
             if duration_text:
-                render_data["text"] = (
+                text = (
                     f"📣 你订阅的UP 「{user_name}」 下播了！<br>"
                     f"本场直播时长：{duration_text}"
                 )
             else:
-                render_data["text"] = f"📣 你订阅的UP 「{user_name}」 下播了！"
-            sub_data["last_live_duration_seconds"] = 0
-            await self.data_manager.update_live_status(sub_user, sub_data["uid"], False)
-        if render_data["text"]:
+                text = f"📣 你订阅的UP 「{user_name}」 下播了！"
+            sub_data.last_live_start_ts = 0
+            await self.data_manager.update_live_status(sub_user, sub_data.uid, False)
+        if text:
+            payload = self._build_live_payload(live_room, text)
             with_atall = await self._should_send_live_atall(
                 sub_user,
-                bool(sub_data.get("live_atall", False)) and is_live_started,
+                bool(sub_data.live_atall) and is_live_started,
             )
-            render_data["qrcode"] = create_qrcode(link)
-            if not self.rai:
-                ls = self._compose_plain_push(render_data)
-                if with_atall:
-                    ls = self._prepend_atall(ls)
-                await self.context.send_message(
-                    sub_user, MessageEventResult(chain=ls).use_t2i(False)
-                )
-                return
-            img_path = await self.renderer.render_dynamic(render_data)
-            if img_path:
-                image_chain = [Image.fromFileSystem(img_path), Plain(f"\n{link}")]
-                if with_atall:
-                    image_chain = self._prepend_atall(image_chain)
-                await self.context.send_message(
-                    sub_user, MessageEventResult(chain=image_chain).use_t2i(False)
-                )
-            else:
-                ls = self._compose_plain_push(render_data, render_fail=True)
-                if with_atall:
-                    ls = self._prepend_atall(ls)
-                await self.context.send_message(
-                    sub_user, MessageEventResult(chain=ls).use_t2i(False)
-                )
+            await self._send_live_payload(sub_user, payload, with_atall)
 
-    def _get_dynamic_items(self, dyn: Dict, data: Dict):
+    def _get_dynamic_items(self, dyn: Dict[str, Any], data: SubscriptionRecord):
         """获取动态条目列表。"""
-        last = data["last"]
+        last = data.last
         items = dyn["items"]
-        recent_ids = data.get("recent_ids", []) or []
+        recent_ids = data.recent_ids
         known_ids = {x for x in ([last] + recent_ids) if x}
         new_items = []
 
@@ -583,18 +597,19 @@ class DynamicListener:
 
         return False
 
-    def _parse_and_filter_dynamics(self, dyn: Dict, data: Dict):
+    def _parse_and_filter_dynamics(
+        self, dyn: Dict[str, Any], data: SubscriptionRecord
+    ) -> List[DynamicParseResult]:
         """
         解析并过滤动态。
         """
-        filter_types = data.get("filter_types", [])
-        filter_regex = data.get("filter_regex", [])
-        uid = data.get("uid", "")
+        filter_types = data.filter_types
+        filter_regex = data.filter_regex
+        uid = str(data.uid)
         items = self._get_dynamic_items(dyn, data)  # 不含last及置顶的动态列表
-        result_list = []
-        # 无新动态
+        result_list: List[DynamicParseResult] = []
         if not items:
-            result_list.append((None, None))
+            return result_list
 
         for item in items:
             dyn_id = item["id_str"]
@@ -613,7 +628,7 @@ class DynamicListener:
             elif item_type == "DYNAMIC_TYPE_ARTICLE":
                 result = self._handle_article_dynamic(item, dyn_id, uid, filter_types)
             else:
-                result = (None, None)
+                result = DynamicParseResult.skip(dyn_id, "unsupported type")
 
             result_list.append(result)
 
@@ -626,7 +641,7 @@ class DynamicListener:
         uid: str,
         filter_types: List[str],
         filter_regex: List[str],
-    ) -> tuple:
+    ) -> DynamicParseResult:
         """处理转发动态的过滤与渲染数据准备。"""
         try:
             is_forward_lottery = (
@@ -640,11 +655,11 @@ class DynamicListener:
 
         if "forward_lottery" in filter_types and is_forward_lottery:
             logger.info(f"转发互动抽奖在过滤列表 {filter_types} 中。")
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "forward_lottery")
 
         if "forward" in filter_types:
             logger.info(f"转发类型在过滤列表 {filter_types} 中。")
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "forward")
 
         try:
             content_text = item["modules"]["module_dynamic"]["desc"]["text"]
@@ -656,25 +671,25 @@ class DynamicListener:
             content_text,
         ):
             logger.info(f"转发内容为抽奖在过滤列表 {filter_types} 中。")
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "lottery")
 
         if self._match_filter_regex(
             content_text, filter_regex, "转发内容匹配正则 {regex_pattern}。"
         ):
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "regex")
 
         render_data = self.renderer.build_render_data(item)
-        render_data["uid"] = uid
-        render_data["url"] = f"https://t.bilibili.com/{dyn_id}"
-        render_data["qrcode"] = create_qrcode(render_data["url"])
+        render_data.uid = uid
+        render_data.url = f"https://t.bilibili.com/{dyn_id}"
+        render_data.qrcode = create_qrcode(render_data.url)
 
         render_forward = self.renderer.build_render_data(
             item.get("orig", {}), is_forward=True
         )
-        if render_forward.get("image_urls"):
-            render_forward["image_urls"] = [render_forward["image_urls"][0]]
-        render_data["forward"] = render_forward
-        return (render_data, dyn_id)
+        if render_forward.image_urls:
+            render_forward.image_urls = [render_forward.image_urls[0]]
+        render_data.forward = render_forward.to_forward_payload()
+        return DynamicParseResult.deliver(render_data, dyn_id)
 
     def _handle_draw_or_word_dynamic(
         self,
@@ -683,16 +698,16 @@ class DynamicListener:
         uid: str,
         filter_types: List[str],
         filter_regex: List[str],
-    ) -> tuple:
+    ) -> DynamicParseResult:
         """处理图文/文字动态。"""
         if "draw" in filter_types:
             logger.info(f"图文类型在过滤列表 {filter_types} 中。")
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "draw")
 
         major = item.get("modules", {}).get("module_dynamic", {}).get("major", {})
         if major.get("type") == "MAJOR_TYPE_BLOCKED":
             logger.info(f"图文动态 {dyn_id} 为充电专属。")
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "major_blocked")
 
         opus = major.get("opus", {})
         summary = opus.get("summary", {})
@@ -702,44 +717,44 @@ class DynamicListener:
 
         if first_node_text == "互动抽奖" and "lottery" in filter_types:
             logger.info(f"互动抽奖在过滤列表 {filter_types} 中。")
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "lottery")
 
         if self._match_filter_regex(
             summary_text,
             filter_regex,
             f"图文动态 {dyn_id} 的 summary 匹配正则 '{{regex_pattern}}'。",
         ):
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "regex")
 
         render_data = self.renderer.build_render_data(item)
-        render_data["uid"] = uid
-        return (render_data, dyn_id)
+        render_data.uid = uid
+        return DynamicParseResult.deliver(render_data, dyn_id)
 
     def _handle_video_dynamic(
         self, item: Dict, dyn_id: str, uid: str, filter_types: List[str]
-    ) -> tuple:
+    ) -> DynamicParseResult:
         """处理视频动态。"""
         if "video" in filter_types:
             logger.info(f"视频类型在过滤列表 {filter_types} 中。")
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "video")
 
         render_data = self.renderer.build_render_data(item)
-        render_data["uid"] = uid
-        return (render_data, dyn_id)
+        render_data.uid = uid
+        return DynamicParseResult.deliver(render_data, dyn_id)
 
     def _handle_article_dynamic(
         self, item: Dict, dyn_id: str, uid: str, filter_types: List[str]
-    ) -> tuple:
+    ) -> DynamicParseResult:
         """处理专栏文章动态。"""
         if "article" in filter_types:
             logger.info(f"文章类型在过滤列表 {filter_types} 中。")
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "article")
 
         major = item.get("modules", {}).get("module_dynamic", {}).get("major", {})
         if major.get("type") == "MAJOR_TYPE_BLOCKED":
             logger.info(f"文章 {dyn_id} 为充电专属。")
-            return (None, dyn_id)
+            return DynamicParseResult.skip(dyn_id, "major_blocked")
 
         render_data = self.renderer.build_render_data(item)
-        render_data["uid"] = uid
-        return (render_data, dyn_id)
+        render_data.uid = uid
+        return DynamicParseResult.deliver(render_data, dyn_id)

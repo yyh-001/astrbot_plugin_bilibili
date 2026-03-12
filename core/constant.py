@@ -2,7 +2,8 @@ import os
 from typing import Dict
 
 CURRENT_DIR = os.path.dirname(__file__)
-ASSETS_DIR = os.path.join(CURRENT_DIR, "assets")
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+ASSETS_DIR = os.path.join(PROJECT_ROOT, "assets")
 
 
 def _asset_path(*parts: str) -> str:
