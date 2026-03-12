@@ -4,7 +4,7 @@ from astrbot.api import FunctionTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic.dataclasses import dataclass
-from ..constant import category_mapping
+from ..core.constant import category_mapping
 from bilibili_api import bangumi
 from bilibili_api.bangumi import IndexFilter as IF
 from typing import Optional

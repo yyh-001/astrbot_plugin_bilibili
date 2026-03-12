@@ -10,12 +10,12 @@ from astrbot.api.all import *
 from astrbot.api.event import MessageEventResult
 from astrbot.api.message_components import AtAll, File, Image, Node, Plain
 
-from .bili_client import BiliClient
-from .constant import BANNER_PATH, LOGO_PATH
-from .data_manager import DataManager
-from .models import DynamicParseResult, RenderPayload, SubscriptionRecord
+from ..bili_client import BiliClient
+from ..core.constant import BANNER_PATH, LOGO_PATH
+from ..core.data_manager import DataManager
+from ..core.models import DynamicParseResult, RenderPayload, SubscriptionRecord
 from .renderer import Renderer
-from .utils import (
+from ..core.utils import (
     create_qrcode,
     image_to_base64,
     is_height_valid,

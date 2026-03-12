@@ -21,7 +21,7 @@ from astrbot.core.star.filter.command import GreedyStr
 from bilibili_api import login_v2
 
 from .bili_client import BiliClient
-from .constant import (
+from .core.constant import (
     BV,
     CARD_TEMPLATES,
     DEFAULT_TEMPLATE,
@@ -31,13 +31,13 @@ from .constant import (
     VALID_SUB_OPTIONS,
     get_template_names,
 )
-from .data_manager import DataManager
-from .listener import DynamicListener
-from .models import RenderPayload, SubscriptionRecord
-from .renderer import Renderer
-from .subscription_service import SubscriptionService
+from .core.data_manager import DataManager
+from .core.models import RenderPayload, SubscriptionRecord
+from .core.utils import create_qrcode, image_to_base64, is_valid_umo
+from .services.listener import DynamicListener
+from .services.renderer import Renderer
+from .services.subscription_service import SubscriptionService
 from .tools.bangumi import BangumiTool
-from .utils import create_qrcode, image_to_base64, is_valid_umo
 
 
 @register("astrbot_plugin_bilibili", "Soulter", "", "", "")

@@ -5,7 +5,7 @@ from typing import Any, Dict
 from astrbot.api import logger
 from astrbot.api.all import Star
 
-from .constant import (
+from ..core.constant import (
     BANNER_PATH,
     CARD_TEMPLATES,
     DEFAULT_TEMPLATE,
@@ -14,8 +14,8 @@ from .constant import (
     RETRY_DELAY,
     get_template_path,
 )
-from .models import RenderPayload
-from .utils import create_qrcode, image_to_base64, parse_rich_text
+from ..core.models import RenderPayload
+from ..core.utils import create_qrcode, image_to_base64, parse_rich_text
 
 
 def load_template(style: str) -> str:

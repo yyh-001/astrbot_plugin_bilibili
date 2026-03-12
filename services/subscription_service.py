@@ -5,9 +5,9 @@ from typing import Callable, List
 
 from astrbot.api import logger
 
-from .bili_client import BiliClient
-from .data_manager import DataManager
-from .models import DynamicParseResult, SubscriptionRecord
+from ..bili_client import BiliClient
+from ..core.data_manager import DataManager
+from ..core.models import DynamicParseResult, SubscriptionRecord
 
 ParseDynamicsFn = Callable[[dict, SubscriptionRecord], List[DynamicParseResult]]
 
