@@ -513,11 +513,11 @@ class Main(Star):
         )
 
         render_data: RenderPayload | None = None
-        dyn_id = None
+        # dyn_id = None
         for result in result_list or []:
             if result.has_payload():
                 render_data = result.payload
-                dyn_id = result.dyn_id
+                # dyn_id = result.dyn_id
                 break
 
         if not render_data:
@@ -525,7 +525,8 @@ class Main(Star):
                 "没有可用于测试推送的动态（可能没有新动态、都被过滤掉，或动态类型暂不支持）。"
             )
 
-        await self.dynamic_listener._handle_new_dynamic(sub_user, render_data, dyn_id)
+        # 测试命令需要每次基于当前代码重新构造消息，避免命中同 dyn_id 的历史缓存。
+        await self.dynamic_listener._handle_new_dynamic(sub_user, render_data, None)
 
         return None
 

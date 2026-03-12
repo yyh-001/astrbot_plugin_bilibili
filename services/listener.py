@@ -14,13 +14,13 @@ from ..bili_client import BiliClient
 from ..core.constant import BANNER_PATH, LOGO_PATH
 from ..core.data_manager import DataManager
 from ..core.models import DynamicParseResult, RenderPayload, SubscriptionRecord
-from .renderer import Renderer
 from ..core.utils import (
     create_qrcode,
     image_to_base64,
     is_height_valid,
     render_text_to_plain,
 )
+from .renderer import Renderer
 
 PLAIN_PUSH_ACTIONS = {
     "DYNAMIC_TYPE_AV": "投稿了新视频",
@@ -230,16 +230,17 @@ class DynamicListener:
 
     def _build_plain_header(self, payload: Any, nested: bool) -> str:
         render_type = payload.type
-        if not isinstance(render_type, str):
-            return ""
-
-        action = PLAIN_PUSH_ACTIONS.get(render_type)
         name = payload.name
-        if not action or not isinstance(name, str) or not name:
-            return ""
+        if not isinstance(name, str):
+            name = ""
+        if not isinstance(render_type, str):
+            render_type = ""
+        display_name = name.strip() or "未知作者"
+
+        action = PLAIN_PUSH_ACTIONS.get(render_type, "发布了新动态")
 
         subject = "原动态作者" if nested else "UP 主"
-        return f"📣 {subject} 「{name}」 {action}:"
+        return f"📣 {subject} 「{display_name}」 {action}:"
 
     def _build_plain_body(self, payload: Any) -> str:
         summary = (payload.summary or "").strip()
@@ -279,9 +280,11 @@ class DynamicListener:
         for pic in filter(None, payload.image_urls):
             chain.append(Image.fromURL(pic))
 
+        # 转发类型的转发部分会进入此分支
+        # [TODO] 此处"转发内容:"后的换行需要实现
         forward_data = getattr(payload, "forward", None)
         if forward_data:
-            chain.append(Plain("\u200b\n转发内容:\n\u200b"))
+            chain.append(Plain("\u200b\n转发内容:"))
             chain.extend(self._compose_plain_push(forward_data, nested=True))
 
         url = payload.url
