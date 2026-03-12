@@ -14,7 +14,8 @@ from .constant import (
     RETRY_DELAY,
     get_template_path,
 )
-from .utils import create_qrcode, create_render_data, image_to_base64, parse_rich_text
+from .models import RenderPayload
+from .utils import create_qrcode, image_to_base64, parse_rich_text
 
 
 def load_template(style: str) -> str:
@@ -60,9 +61,7 @@ class Renderer:
             target_style = DEFAULT_TEMPLATE
         return self._templates.get(target_style, "")
 
-    async def render_dynamic(
-        self, render_data: Dict[str, Any], style: str | None = None
-    ):
+    async def render_dynamic(self, payload: RenderPayload, style: str | None = None):
         """
         将渲染数据字典渲染成最终图片。
         这是该类的主要入口方法。
@@ -77,13 +76,14 @@ class Renderer:
         }
 
         tmpl = self.get_template(style)
+        context = payload.to_template_context()
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             render_output = None
             try:
                 render_output = await self.star.html_render(
                     tmpl=tmpl,
-                    data=render_data,
+                    data=context,
                     return_url=False,
                     options=options,
                 )
@@ -101,84 +101,87 @@ class Renderer:
 
         return None  # 所有尝试都失败
 
-    def build_render_data(self, item: Dict, is_forward: bool = False) -> Dict[str, Any]:
+    @staticmethod
+    def _build_base_payload(item: Dict[str, Any]) -> RenderPayload:
+        author_module = item.get("modules", {}).get("module_author") or {}
+        return RenderPayload(
+            banner=image_to_base64(BANNER_PATH),
+            name=str(author_module.get("name") or ""),
+            avatar=str(author_module.get("face") or ""),
+            pendant=str((author_module.get("pendant") or {}).get("image") or ""),
+            type=str(item.get("type") or ""),
+        )
+
+    def _fill_video_payload(
+        self, payload: RenderPayload, item: Dict[str, Any], is_forward: bool
+    ) -> RenderPayload:
+        archive = item["modules"]["module_dynamic"]["major"]["archive"]
+        title = str(archive["title"])
+        bv = str(archive["bvid"])
+        cover_url = str(archive["cover"])
+        desc = item.get("modules", {}).get("module_dynamic", {}).get("desc")
+        topic = item.get("modules", {}).get("module_dynamic", {}).get("topic")
+        content_text = (desc or {}).get("text")
+
+        payload.title = title
+        payload.image_urls = [cover_url]
+        payload.text = (
+            f"投稿了新视频<br>{parse_rich_text(desc, topic)}"
+            if content_text
+            else "投稿了新视频<br>"
+        )
+        if not is_forward:
+            payload.url = f"https://www.bilibili.com/video/{bv}"
+            payload.qrcode = create_qrcode(payload.url)
+        return payload
+
+    def _fill_opus_payload(
+        self, payload: RenderPayload, item: Dict[str, Any], is_forward: bool
+    ) -> RenderPayload:
+        opus = item["modules"]["module_dynamic"]["major"]["opus"]
+        summary = opus["summary"]
+        jump_url = str(opus["jump_url"])
+        topic = item["modules"]["module_dynamic"]["topic"]
+
+        payload.summary = str(summary.get("text") or "")
+        payload.text = parse_rich_text(summary, topic)
+        payload.title = str(opus.get("title") or "")
+        payload.image_urls = [str(pic["url"]) for pic in opus.get("pics", [])[:9]]
+        if not payload.image_urls and self.rai:
+            payload.image_urls = [image_to_base64(LOGO_PATH)]
+        if not is_forward:
+            payload.url = f"https:{jump_url}"
+            payload.qrcode = create_qrcode(payload.url)
+        return payload
+
+    @staticmethod
+    def _fill_forward_payload(
+        payload: RenderPayload, item: Dict[str, Any]
+    ) -> RenderPayload:
+        desc = item.get("modules", {}).get("module_dynamic", {}).get("desc")
+        topic = item.get("modules", {}).get("module_dynamic", {}).get("topic")
+        content_text = (desc or {}).get("text")
+        if content_text:
+            payload.text = parse_rich_text(desc, topic)
+        return payload
+
+    def build_render_data(
+        self, item: Dict[str, Any], is_forward: bool = False
+    ) -> RenderPayload:
         """
-        根据从B站API获取的单个动态项目，构建用于渲染的字典。
+        根据从B站API获取的单个动态项目，构建用于渲染的对象。
         is_forward: 标记是否正在处理转发动态
         """
-        render_data = create_render_data()
-        render_data["banner"] = image_to_base64(BANNER_PATH)
-        # 用户名称、头像、挂件
-        author_module = item.get("modules", {}).get("module_author") or {}
-        render_data["name"] = author_module.get("name")
-        render_data["avatar"] = author_module.get("face")
-        render_data["pendant"] = (author_module.get("pendant") or {}).get("image")
-        render_data["type"] = item.get("type")
-
-        # 根据不同动态类型填充数据
-        if item.get("type") == "DYNAMIC_TYPE_AV":
-            # 视频动态
-            archive = item["modules"]["module_dynamic"]["major"]["archive"]
-            title = archive["title"]
-            bv = archive["bvid"]
-            cover_url = archive["cover"]
-
-            try:
-                content_text = item["modules"]["module_dynamic"]["desc"]["text"]
-            except (TypeError, KeyError):
-                content_text = None  # 或默认值
-
-            if content_text:
-                rich_text = parse_rich_text(
-                    item["modules"]["module_dynamic"]["desc"],
-                    item["modules"]["module_dynamic"]["topic"],
-                )
-                render_data["text"] = f"投稿了新视频<br>{rich_text}"
-            else:
-                render_data["text"] = f"投稿了新视频<br>"
-            render_data["title"] = title
-            render_data["image_urls"] = [cover_url]
-            if not is_forward:
-                url = f"https://www.bilibili.com/video/{bv}"
-                render_data["qrcode"] = create_qrcode(url)
-                render_data["url"] = url
-            # logger.info(f"返回视频动态 {dyn_id}。")
-            return render_data
-        elif item.get("type") in (
+        payload = self._build_base_payload(item)
+        item_type = item.get("type")
+        if item_type == "DYNAMIC_TYPE_AV":
+            return self._fill_video_payload(payload, item, is_forward)
+        if item_type in (
             "DYNAMIC_TYPE_DRAW",
             "DYNAMIC_TYPE_WORD",
             "DYNAMIC_TYPE_ARTICLE",
         ):
-            # 图文动态
-            opus = item["modules"]["module_dynamic"]["major"]["opus"]
-            summary = opus["summary"]
-            jump_url = opus["jump_url"]
-            topic = item["modules"]["module_dynamic"]["topic"]
-
-            render_data["summary"] = summary["text"]
-            render_data["text"] = parse_rich_text(summary, topic)
-            render_data["title"] = opus["title"]
-            render_data["image_urls"] = [pic["url"] for pic in opus["pics"][:9]]
-            if not render_data["image_urls"] and self.rai:
-                render_data["image_urls"] = [image_to_base64(LOGO_PATH)]
-            if not is_forward:
-                url = f"https:{jump_url}"
-                render_data["qrcode"] = create_qrcode(url)
-                render_data["url"] = url
-            # logger.info(f"返回图文动态 {dyn_id}。")
-            return render_data
-        elif item.get("type") == "DYNAMIC_TYPE_FORWARD":
-            # 转发动态
-            try:
-                content_text = item["modules"]["module_dynamic"]["desc"]["text"]
-            except (TypeError, KeyError):
-                content_text = None
-            if content_text:
-                rich_text = parse_rich_text(
-                    item["modules"]["module_dynamic"]["desc"],
-                    item["modules"]["module_dynamic"]["topic"],
-                )
-                render_data["text"] = f"{rich_text}"
-            return render_data
-
-        return render_data
+            return self._fill_opus_payload(payload, item, is_forward)
+        if item_type == "DYNAMIC_TYPE_FORWARD":
+            return self._fill_forward_payload(payload, item)
+        return payload

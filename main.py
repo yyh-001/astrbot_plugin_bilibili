@@ -3,7 +3,7 @@ import json
 import os
 import re
 import tempfile
-from typing import List
+from typing import List, Tuple
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.all import *
@@ -33,9 +33,11 @@ from .constant import (
 )
 from .data_manager import DataManager
 from .listener import DynamicListener
+from .models import RenderPayload, SubscriptionRecord
 from .renderer import Renderer
+from .subscription_service import SubscriptionService
 from .tools.bangumi import BangumiTool
-from .utils import create_qrcode, create_render_data, image_to_base64, is_valid_umo
+from .utils import create_qrcode, image_to_base64, is_valid_umo
 
 
 @register("astrbot_plugin_bilibili", "Soulter", "", "", "")
@@ -73,6 +75,11 @@ class Main(Star):
             renderer=self.renderer,
             cfg=self.cfg,
         )
+        self.subscription_service = SubscriptionService(
+            data_manager=self.data_manager,
+            bili_client=self.bili_client,
+            parse_dynamics=self.dynamic_listener._parse_and_filter_dynamics,
+        )
         self.context.add_llm_tools(BangumiTool())
         self._start_tasks()
 
@@ -103,21 +110,74 @@ class Main(Star):
         return filter_types, filter_regex, live_atall
 
     @staticmethod
-    def _build_subscription_data(
+    def _build_filter_desc(
+        filter_types: List[str], filter_regex: List[str], live_atall: bool
+    ) -> str:
+        filter_desc = ""
+        if filter_types:
+            filter_desc += f"<br>过滤类型: {', '.join(filter_types)}"
+        if filter_regex:
+            filter_desc += f"<br>过滤正则: {filter_regex}"
+        filter_desc += f"<br>直播开播@全体: {'开启' if live_atall else '关闭'}"
+        return filter_desc
+
+    @staticmethod
+    def _build_subscription_payload(
         uid: int,
+        name: str,
+        sex: str,
+        avatar: str,
+        mid: int,
+        filter_desc: str,
+    ) -> RenderPayload:
+        link = f"https://space.bilibili.com/{mid}"
+        return RenderPayload(
+            uid=str(uid),
+            name="AstrBot",
+            avatar=image_to_base64(LOGO_PATH),
+            text=f"📣 订阅成功！<br>UP 主: {name} | 性别: {sex}{filter_desc}",
+            image_urls=[avatar] if avatar else [],
+            url=link,
+            qrcode=create_qrcode(link),
+        )
+
+    async def _send_subscription_result(
+        self, event: AstrMessageEvent, payload: RenderPayload, avatar: str
+    ) -> MessageEventResult | None:
+        if self.rai:
+            img_path = await self.renderer.render_dynamic(payload)
+            if img_path:
+                await event.send(
+                    MessageChain().file_image(img_path).message(payload.url)
+                )
+                return None
+            msg = "渲染图片失败了 (´;ω;`)"
+            text = "\n".join(filter(None, payload.text.split("<br>")))
+            chain = MessageChain().message(msg).message(text)
+            if avatar:
+                chain = chain.url_image(avatar)
+            await event.send(chain)
+            return None
+        chain = [Plain(payload.text)]
+        if avatar:
+            chain.append(Image.fromURL(avatar))
+        return MessageEventResult(chain=chain, use_t2i_=False)
+
+    async def _apply_subscription(
+        self,
+        sub_user: str,
+        uid_int: int,
         filter_types: List[str],
         filter_regex: List[str],
         live_atall: bool,
-    ) -> dict:
-        return {
-            "uid": uid,
-            "last": "",
-            "is_live": False,
-            "filter_types": filter_types,
-            "filter_regex": filter_regex,
-            "recent_ids": [],
-            "live_atall": live_atall,
-        }
+    ) -> Tuple[bool, str]:
+        result = await self.subscription_service.add_or_update(
+            sub_user, uid_int, filter_types, filter_regex, live_atall
+        )
+        if result.updated:
+            option_desc = "开启" if live_atall else "关闭"
+            return True, f"该动态已订阅，已更新过滤条件。直播@全体: {option_desc}"
+        return False, ""
 
     @command("bili_login")
     @permission_type(PermissionType.ADMIN)
@@ -247,27 +307,26 @@ class Main(Star):
             info = video_data["info"]
             online = video_data["online"]
 
-            render_data = create_render_data()
-            render_data["name"] = "AstrBot"
-            render_data["avatar"] = image_to_base64(LOGO_PATH)
-            render_data["title"] = info["title"]
-            render_data["text"] = (
-                f"UP 主: {info['owner']['name']}<br>"
-                f"播放量: {info['stat']['view']}<br>"
-                f"点赞: {info['stat']['like']}<br>"
-                f"投币: {info['stat']['coin']}<br>"
-                f"总共 {online['total']} 人正在观看"
+            payload = RenderPayload(
+                name="AstrBot",
+                avatar=image_to_base64(LOGO_PATH),
+                title=info["title"],
+                text=(
+                    f"UP 主: {info['owner']['name']}<br>"
+                    f"播放量: {info['stat']['view']}<br>"
+                    f"点赞: {info['stat']['like']}<br>"
+                    f"投币: {info['stat']['coin']}<br>"
+                    f"总共 {online['total']} 人正在观看"
+                ),
+                image_urls=[info["pic"]],
             )
-            render_data["image_urls"] = [info["pic"]]
 
-            img_path = await self.renderer.render_dynamic(render_data)
+            img_path = await self.renderer.render_dynamic(payload)
             if img_path:
                 await event.send(MessageChain().file_image(img_path))
             else:
                 msg = "渲染图片失败了 (´;ω;`)"
-                text = "\n".join(
-                    filter(None, render_data.get("text", "").split("<br>"))
-                )
+                text = "\n".join(filter(None, payload.text.split("<br>")))
                 await event.send(
                     MessageChain().message(msg).message(text).url_image(info["pic"])
                 )
@@ -279,93 +338,36 @@ class Main(Star):
         sub_user = event.unified_msg_origin
         if not uid.isdigit():
             return MessageEventResult().message("UID 格式错误")
+        uid_int = int(uid)
 
-        # 检查是否已经存在该订阅
-        if await self.data_manager.update_subscription(
-            sub_user, int(uid), filter_types, filter_regex, live_atall
-        ):
-            # 如果已存在，更新其过滤条件
-            option_desc = "开启" if live_atall else "关闭"
-            return MessageEventResult().message(
-                f"该动态已订阅，已更新过滤条件。直播@全体: {option_desc}"
-            )
-        # 以下为新增订阅
-        try:
-            # 构造新的订阅数据结构
-            _sub_data = self._build_subscription_data(
-                int(uid), filter_types, filter_regex, live_atall
-            )
-            # 获取最新一条动态 (用于初始化 last_id)
-            dyn = await self.bili_client.get_latest_dynamics(int(uid))
-            if dyn:
-                await self.data_manager.add_subscription(sub_user, _sub_data)
-                result_list = self.dynamic_listener._parse_and_filter_dynamics(
-                    dyn, _sub_data
-                )
-                for render_data, dyn_id in reversed(result_list):
-                    if dyn_id:
-                        await self.data_manager.update_last_dynamic_id(
-                            sub_user, int(uid), dyn_id
-                        )
-        except Exception as e:
-            logger.error(f"获取初始动态失败: {e}")
-        finally:
-            # 保存配置
-            await self.data_manager.add_subscription(sub_user, _sub_data)
-        # 获取用户信息(可能412，故后置)
+        updated, update_msg = await self._apply_subscription(
+            sub_user, uid_int, filter_types, filter_regex, live_atall
+        )
+        if updated:
+            return MessageEventResult().message(update_msg)
+
         try:
             usr_info, msg = await self.bili_client.get_user_info(int(uid))
-            if usr_info:
-                mid = usr_info["mid"]
-                name = usr_info["name"]
-                sex = usr_info["sex"]
-                avatar = usr_info["face"]
         except Exception as e:
             logger.error(f"获取用户信息失败: {e}")
-
-        try:
-            filter_desc = ""
-            if filter_types:
-                filter_desc += f"<br>过滤类型: {', '.join(filter_types)}"
-            if filter_regex:
-                filter_desc += f"<br>过滤正则: {filter_regex}"
-            filter_desc += f"<br>直播开播@全体: {'开启' if live_atall else '关闭'}"
-
-            render_data = create_render_data()
-            render_data["uid"] = uid
-            render_data["name"] = "AstrBot"
-            render_data["avatar"] = image_to_base64(LOGO_PATH)
-            render_data["text"] = (
-                f"📣 订阅成功！<br>"
-                f"UP 主: {name} | 性别: {sex}"
-                f"{filter_desc}"  # 显示过滤信息
+            return MessageEventResult().message("订阅成功，但获取 UP 主信息失败。")
+        if not usr_info:
+            return MessageEventResult().message(
+                f"订阅成功，但获取 UP 主信息失败: {msg}"
             )
-            render_data["image_urls"] = [avatar]
-            render_data["url"] = f"https://space.bilibili.com/{mid}"
-            render_data["qrcode"] = create_qrcode(render_data["url"])
-            if self.rai:
-                img_path = await self.renderer.render_dynamic(render_data)
-                if img_path:
-                    await event.send(
-                        MessageChain().file_image(img_path).message(render_data["url"])
-                    )
-                else:
-                    msg = "渲染图片失败了 (´;ω;`)"
-                    text = "\n".join(
-                        filter(None, render_data.get("text", "").split("<br>"))
-                    )
-                    await event.send(
-                        MessageChain().message(msg).message(text).url_image(avatar)
-                    )
-            else:
-                chain = [
-                    Plain(render_data["text"]),
-                    Image.fromURL(avatar),
-                ]
-                return MessageEventResult(chain=chain, use_t2i_=False)
-        except Exception as e:
-            logger.warning(f"订阅出现问题: {e}")
-            return MessageEventResult().message(f"订阅成功！但是:{e}")
+
+        filter_desc = self._build_filter_desc(filter_types, filter_regex, live_atall)
+        payload = self._build_subscription_payload(
+            uid_int,
+            str(usr_info.get("name", "Unknown")),
+            str(usr_info.get("sex", "保密")),
+            str(usr_info.get("face", "")),
+            int(usr_info.get("mid", uid_int)),
+            filter_desc,
+        )
+        return await self._send_subscription_result(
+            event, payload, str(usr_info.get("face", ""))
+        )
 
     @command("bili_sub_list", alias={"订阅列表"})
     async def sub_list(self, event: AstrMessageEvent):
@@ -378,7 +380,7 @@ class Main(Star):
             return MessageEventResult().message("无订阅")
         else:
             for idx, uid_sub_data in enumerate(subs):
-                uid = uid_sub_data["uid"]
+                uid = uid_sub_data.uid
                 info, _ = await self.bili_client.get_user_info(int(uid))
                 if not info:
                     ret += f"{idx + 1}. {uid} - 无法获取 UP 主信息\n"
@@ -424,44 +426,16 @@ class Main(Star):
                 "请提供正确的UMO与UID。使用 /sid 指令查看当前会话的 UMO 或参考 WebUI-自定义规则。"
             )
         filter_types, filter_regex, live_atall = self._parse_sub_args(input)
+        uid_int = int(uid)
 
-        if await self.data_manager.update_subscription(
-            umo, int(uid), filter_types, filter_regex, live_atall
-        ):
-            option_desc = "开启" if live_atall else "关闭"
-            return MessageEventResult().message(
-                f"该动态已订阅，已更新过滤条件。直播@全体: {option_desc}"
-            )
-
-        try:
-            _sub_data = self._build_subscription_data(
-                int(uid), filter_types, filter_regex, live_atall
-            )
-
-            dyn = await self.bili_client.get_latest_dynamics(int(uid))
-            if dyn:
-                await self.data_manager.add_subscription(umo, _sub_data)
-                result_list = self.dynamic_listener._parse_and_filter_dynamics(
-                    dyn, _sub_data
-                )
-                for _, dyn_id in reversed(result_list):
-                    if dyn_id:
-                        await self.data_manager.update_last_dynamic_id(
-                            umo, int(uid), dyn_id
-                        )
-
-            usr_info, msg = await self.bili_client.get_user_info(int(uid))
-        except Exception as e:
-            logger.error(f"获取初始动态失败: {e}")
-        finally:
-            # 保存配置
-            await self.data_manager.add_subscription(umo, _sub_data)
-            if not usr_info:
-                return MessageEventResult().message(msg)
-            else:
-                return MessageEventResult().message(
-                    f"订阅完成，已为{umo}添加订阅{uid}，详情见日志。"
-                )
+        updated, update_msg = await self._apply_subscription(
+            umo, uid_int, filter_types, filter_regex, live_atall
+        )
+        if updated:
+            return MessageEventResult().message(update_msg)
+        return MessageEventResult().message(
+            f"订阅完成，已为{umo}添加订阅{uid_int}，详情见日志。"
+        )
 
     @permission_type(PermissionType.ADMIN)
     @command("bili_global_list", alias={"全局列表"})
@@ -475,7 +449,7 @@ class Main(Star):
         for sub_user in all_subs:
             ret += f"- {sub_user}\n"
             for sub in all_subs[sub_user]:
-                uid = sub.get("uid")
+                uid = sub.uid
                 ret += f"  - {uid}\n"
         return MessageEventResult().message(ret)
 
@@ -535,21 +509,15 @@ class Main(Star):
 
         result_list = self.dynamic_listener._parse_and_filter_dynamics(
             dyn,
-            {
-                "uid": uid,
-                "filter_types": [],
-                "filter_regex": [],
-                "last": "",
-                "recent_ids": [],
-            },
+            SubscriptionRecord(uid=uid_int),
         )
 
-        render_data = None
+        render_data: RenderPayload | None = None
         dyn_id = None
-        for maybe_render_data, maybe_dyn_id in result_list or []:
-            if maybe_render_data:
-                render_data = maybe_render_data
-                dyn_id = maybe_dyn_id
+        for result in result_list or []:
+            if result.has_payload():
+                render_data = result.payload
+                dyn_id = result.dyn_id
                 break
 
         if not render_data:
