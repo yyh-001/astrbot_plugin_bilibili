@@ -291,7 +291,7 @@ class DynamicListener:
 
         forward_data = render_data.get("forward")
         if forward_data:
-            chain.append(Plain("\n转发内容:\n"))
+            chain.append(Plain("\u200b\n转发内容:\n\u200b"))
             chain.extend(self._compose_plain_push(forward_data, nested=True))
 
         url = render_data.get("url", "")
@@ -391,24 +391,22 @@ class DynamicListener:
         return [AtAll(), Plain(" ")] + chain_parts
 
     @staticmethod
-    def _parse_live_duration_seconds(live_room: Dict[str, Any]) -> int:
-        live_time = live_room.get("live_time", 0)
-        if isinstance(live_time, (int, float)):
-            return max(0, int(live_time))
-        if not isinstance(live_time, str):
+    def _parse_live_start_timestamp(live_room: Dict[str, Any]) -> int:
+        try:
+            live_start_ts = int(live_room.get("live_time", 0) or 0)
+        except (TypeError, ValueError):
             return 0
+        if live_start_ts <= 0:
+            return 0
+        return live_start_ts
 
-        stripped = live_time.strip()
-        if not stripped:
+    @staticmethod
+    def _calc_live_duration_seconds(current_ts: int, live_start_ts: int) -> int:
+        if current_ts <= 0 or live_start_ts <= 0:
             return 0
-        if stripped.isdigit():
-            return int(stripped)
-
-        parts = stripped.split(":")
-        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        if current_ts <= live_start_ts:
             return 0
-        hours, minutes, seconds = (int(part) for part in parts)
-        return hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds
+        return current_ts - live_start_ts
 
     @staticmethod
     def _format_live_duration_text(duration_seconds: int) -> str:
@@ -473,9 +471,11 @@ class DynamicListener:
     async def _handle_live_status(self, sub_user: str, sub_data: Dict, live_room: Dict):
         """处理并发送直播状态变更通知。"""
         is_live = sub_data.get("is_live", False)
-        current_live_seconds = self._parse_live_duration_seconds(live_room)
-        if live_room.get("live_status", "") == 1 and current_live_seconds > 0:
-            sub_data["last_live_duration_seconds"] = current_live_seconds
+        current_unix_ts = int(time.time())
+        is_live_now = live_room.get("live_status", "") == 1
+        current_live_start_ts = self._parse_live_start_timestamp(live_room)
+        if is_live_now and current_live_start_ts > 0:
+            sub_data["last_live_start_ts"] = current_live_start_ts
 
         live_name = live_room.get("title", "Unknown")
         user_name = live_room.get("uname", "Unknown")
@@ -491,15 +491,17 @@ class DynamicListener:
         render_data["url"] = link
         render_data["image_urls"] = [cover_url]
         # live_status: 0：未开播    1：正在直播     2：轮播中
-        is_live_started = live_room.get("live_status", "") == 1 and not is_live
+        is_live_started = is_live_now and not is_live
         if is_live_started:
-            sub_data["last_live_duration_seconds"] = 0
+            if current_live_start_ts > 0:
+                sub_data["last_live_start_ts"] = current_live_start_ts
             render_data["text"] = f"📣 你订阅的UP 「{user_name}」 开播了！"
             await self.data_manager.update_live_status(sub_user, sub_data["uid"], True)
-        if live_room.get("live_status", "") != 1 and is_live:
-            live_duration_seconds = max(
-                current_live_seconds,
-                int(sub_data.get("last_live_duration_seconds", 0) or 0),
+        if not is_live_now and is_live:
+            cached_live_start_ts = int(sub_data.get("last_live_start_ts", 0) or 0)
+            live_start_ts = max(current_live_start_ts, cached_live_start_ts)
+            live_duration_seconds = self._calc_live_duration_seconds(
+                current_unix_ts, live_start_ts
             )
             duration_text = self._format_live_duration_text(live_duration_seconds)
             if duration_text:
@@ -509,7 +511,7 @@ class DynamicListener:
                 )
             else:
                 render_data["text"] = f"📣 你订阅的UP 「{user_name}」 下播了！"
-            sub_data["last_live_duration_seconds"] = 0
+            sub_data["last_live_start_ts"] = 0
             await self.data_manager.update_live_status(sub_user, sub_data["uid"], False)
         if render_data["text"]:
             with_atall = await self._should_send_live_atall(
