@@ -86,8 +86,8 @@ plugin i https://github.com/Soulter/astrbot_plugin_bilibili
 1. 渲染图片失败 (尝试次数: 1): 500, message='Internal Server Error'  
 一般是公共接口不稳定性导致，详见[issue43](https://github.com/Soulter/astrbot_plugin_bilibili/issues/43)
 
-2. 错误代码-352  
-尝试[issue34](https://github.com/Soulter/astrbot_plugin_bilibili/issues/34)中方法
+2. 错误代码-352 / 412  
+先查看以下issue中解决方案[issue34](https://github.com/Soulter/astrbot_plugin_bilibili/issues/34)、[issue58](https://github.com/Soulter/astrbot_plugin_bilibili/issues/58)、[issue72](https://github.com/Soulter/astrbot_plugin_bilibili/issues/72)
 
 3. AstrBot更新到4.0版本后订阅失效  
 UMO结构发生了变化，已为"全局列表"指令添加了具体订阅信息，使用该指令查看后重新订阅即可。  
@@ -125,6 +125,7 @@ python dev_ui.py
 - 调整轮询周期配置项的语义，现以秒为单位。
 - 订阅时支持配置是否@全体成员，对开播推送生效。
 - 下播提醒添加时长信息。
+- 代码质量重构。
 
 ‼️astrbot_plugin_bilibili >= v1.4.14 需要 Astrbot >= 4.5.2；原因是使用了Astrbot >= 4.5.2推荐的函数调用写法，而Astrbot >= 4.5.3修复了webui工具显示错误，推荐升级到Astrbot >= 4.5.3
 

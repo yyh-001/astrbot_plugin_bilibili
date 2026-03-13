@@ -4,3 +4,4 @@ help: 输入 /bili 查看关键词回复帮助。
 version: v1.5.5 # 插件的版本号
 author: "Flartiny & Soulter" # 作者
 repo: https://github.com/Soulter/astrbot_plugin_bilibili # 插件的仓库地址
+astrbot_version: ">=4.5.2"
