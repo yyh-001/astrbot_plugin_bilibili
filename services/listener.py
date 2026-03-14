@@ -2,7 +2,7 @@ import asyncio
 import re
 import time
 import traceback
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from astrbot.api import logger
@@ -60,6 +60,10 @@ class DynamicListener:
         self.dynamic_limit = cfg.get("dynamic_limit", 5)
         self.render_cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self.render_cache_limit = int(cfg.get("render_cache_limit", 32))
+        self.plain_push_template = (cfg.get("plain_push_template", "") or "").strip()
+        self.plain_push_forward_template = (
+            cfg.get("plain_push_forward_template", "") or ""
+        ).strip()
 
     async def start(self):
         """启动后台监听循环（按 UID 任务池调度）。"""
@@ -292,6 +296,68 @@ class DynamicListener:
             chain.append(Plain(f"\n{url}"))
         return chain
 
+    def _compose_template_push(self, payload: Any, render_fail: bool = False) -> list:
+        """使用自定义模板构建非图片模式下的消息链。"""
+        chain: list = []
+        if render_fail:
+            chain.append(Plain("渲染图片失败了 (´;ω;`)\n"))
+
+        text = self._format_payload_template(self.plain_push_template, payload)
+        if text is None:
+            return self._compose_plain_push(payload, render_fail)
+        if text:
+            chain.append(Plain(text))
+
+        for pic in filter(None, payload.image_urls):
+            chain.append(Image.fromURL(pic))
+
+        forward_data = getattr(payload, "forward", None)
+        if forward_data:
+            if self.plain_push_forward_template:
+                fwd_text = self._format_payload_template(
+                    self.plain_push_forward_template,
+                    forward_data,
+                    with_action=False,
+                )
+                if fwd_text is None:
+                    chain.extend(self._compose_plain_push(forward_data, nested=True))
+                else:
+                    chain.append(Plain("\u200b\n转发内容:"))
+                    if fwd_text:
+                        chain.append(Plain(f"\n{fwd_text}"))
+                    for pic in filter(None, forward_data.image_urls):
+                        chain.append(Image.fromURL(pic))
+            else:
+                chain.append(Plain("\u200b\n转发内容:"))
+                chain.extend(self._compose_plain_push(forward_data, nested=True))
+
+        return chain
+
+    def _format_payload_template(
+        self, template: str, payload: Any, *, with_action: bool = True
+    ) -> Optional[str]:
+        """用 payload 字段格式化模板，返回去除空行后的文本。格式化失败返回 None。"""
+        name = payload.name.strip() if isinstance(payload.name, str) else ""
+        render_type = payload.type if isinstance(payload.type, str) else ""
+        ctx: Dict[str, str] = {
+            "name": name or "未知作者",
+            "uid": str(getattr(payload, "uid", "") or ""),
+            "title": str(payload.title or ""),
+            "text": self._build_plain_body(payload),
+            "url": str(payload.url or ""),
+        }
+        if with_action:
+            ctx["action"] = PLAIN_PUSH_ACTIONS.get(render_type, "发布了新动态")
+
+        try:
+            formatted = template.format_map(defaultdict(str, ctx))
+        except Exception as e:
+            logger.warning(f"消息模板格式化失败: {e}，回退到默认格式")
+            return None
+
+        lines = [line for line in formatted.split("\n") if line.strip()]
+        return "\n".join(lines)
+
     async def _send_dynamic(
         self, sub_user: str, chain_parts: list, send_node: bool = False
     ):
@@ -334,7 +400,10 @@ class DynamicListener:
 
         send_node_flag = self.node
         if not self.rai:
-            ls = self._compose_plain_push(payload)
+            if self.plain_push_template:
+                ls = self._compose_template_push(payload)
+            else:
+                ls = self._compose_plain_push(payload)
             await self._send_dynamic(sub_user, ls, send_node_flag)
             self._cache_render(dyn_id, ls, send_node_flag)
             return
@@ -354,7 +423,10 @@ class DynamicListener:
             return
 
         logger.error("渲染图片失败，尝试发送纯文本消息")
-        ls = self._compose_plain_push(payload, render_fail=True)
+        if self.plain_push_template:
+            ls = self._compose_template_push(payload, render_fail=True)
+        else:
+            ls = self._compose_plain_push(payload, render_fail=True)
         await self._send_dynamic(sub_user, ls, send_node=True)
 
     @staticmethod
