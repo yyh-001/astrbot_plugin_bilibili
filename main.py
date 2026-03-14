@@ -387,6 +387,15 @@ class Main(Star):
                 else:
                     name = info["name"]
                     ret += f"{idx + 1}. {uid} - {name}\n"
+                filters = []
+                if uid_sub_data.filter_types:
+                    filters.append(f"过滤类型: {', '.join(uid_sub_data.filter_types)}")
+                if uid_sub_data.filter_regex:
+                    filters.append(f"过滤正则: {uid_sub_data.filter_regex}")
+                if uid_sub_data.live_atall:
+                    filters.append("直播@全体: live_atall")
+                if filters:
+                    ret += f"   {'｜'.join(filters)}\n"
             return MessageEventResult().message(ret)
 
     @command("bili_sub_del", alias={"订阅删除"})
