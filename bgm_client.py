@@ -10,6 +10,7 @@ DEFAULT_BANGUMI_USER_AGENT = (
     "(https://github.com/Soulter/astrbot_plugin_bilibili)"
 )
 MAX_ERROR_BODY_LEN = 300
+EP_PAGE_SIZE = 200
 
 
 class BangumiApiClient:
@@ -31,7 +32,10 @@ class BangumiApiClient:
         self._timeout_secs = timeout_secs
 
     def _headers(self) -> dict[str, str]:
-        headers = {"User-Agent": self._user_agent}
+        headers = {
+            "User-Agent": self._user_agent,
+            "Accept-Encoding": "identity",
+        }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
@@ -42,21 +46,51 @@ class BangumiApiClient:
             raise ValueError("bgm.tv /calendar 响应格式错误：顶层不是数组")
         return [item for item in payload if isinstance(item, dict)]
 
-    async def get_calendar(self) -> list[dict[str, Any]]:
+    @staticmethod
+    def _decode_json_or_raise(body: str, endpoint: str) -> Any:
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"bgm.tv {endpoint} 响应不是合法 JSON") from exc
+
+    async def _request_json(
+        self, endpoint: str, params: dict[str, Any] | None = None
+    ) -> Any:
         timeout = aiohttp.ClientTimeout(total=self._timeout_secs)
-        url = f"{self._base_url}/calendar"
+        url = f"{self._base_url}{endpoint}"
         async with aiohttp.ClientSession(
             timeout=timeout, headers=self._headers()
         ) as session:
-            async with session.get(url) as resp:
+            async with session.get(url, params=params or {}) as resp:
                 body = await resp.text()
                 if resp.status != 200:
                     snippet = body[:MAX_ERROR_BODY_LEN]
                     raise RuntimeError(
-                        f"bgm.tv /calendar 请求失败: HTTP {resp.status}, body={snippet}"
+                        f"bgm.tv {endpoint} 请求失败: HTTP {resp.status}, body={snippet}"
                     )
-                try:
-                    payload = json.loads(body)
-                except json.JSONDecodeError as exc:
-                    raise ValueError("bgm.tv /calendar 响应不是合法 JSON") from exc
-                return self._ensure_list_payload(payload)
+                return self._decode_json_or_raise(body, endpoint)
+
+    async def get_calendar(self) -> list[dict[str, Any]]:
+        payload = await self._request_json("/calendar")
+        return self._ensure_list_payload(payload)
+
+    async def get_episodes_page(
+        self,
+        subject_id: int,
+        *,
+        ep_type: int = 0,
+        limit: int = EP_PAGE_SIZE,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        payload = await self._request_json(
+            "/v0/episodes",
+            params={
+                "subject_id": subject_id,
+                "type": ep_type,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("bgm.tv /v0/episodes 响应格式错误：顶层不是对象")
+        return payload
