@@ -38,6 +38,7 @@ from .services.listener import DynamicListener
 from .services.renderer import Renderer
 from .services.subscription_service import SubscriptionService
 from .tools.bangumi import BangumiTool
+from .tools.bgm_daily import BgmDailyTool
 
 
 @register("astrbot_plugin_bilibili", "Soulter", "", "", "")
@@ -51,6 +52,7 @@ class Main(Star):
         self.enable_parse_miniapp = self.cfg.get("enable_parse_miniapp", True)
         self.enable_parse_BV = self.cfg.get("enable_parse_BV", True)
         self.proxy = (self.cfg.get("proxy", "") or "").strip()
+        self.bangumi_token = (self.cfg.get("bangumi_token", "") or "").strip()
         # 读取样式配置
         self.style = self.cfg.get("renderer_template", DEFAULT_TEMPLATE)
 
@@ -81,6 +83,10 @@ class Main(Star):
             parse_dynamics=self.dynamic_listener._parse_and_filter_dynamics,
         )
         self.context.add_llm_tools(BangumiTool())
+        if self.bangumi_token:
+            self.context.add_llm_tools(BgmDailyTool(token=self.bangumi_token))
+        else:
+            logger.info("未配置 bangumi_token，跳过注册 BgmDailyTool。")
         self._start_tasks()
 
     def _start_tasks(self):
