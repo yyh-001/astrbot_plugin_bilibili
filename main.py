@@ -27,6 +27,7 @@ from .core.constant import (
     DEFAULT_TEMPLATE,
     LIVE_ATALL_OPTION,
     LOGO_PATH,
+    RECENT_DYNAMIC_CACHE,
     VALID_FILTER_TYPES,
     VALID_SUB_OPTIONS,
     get_template_names,
@@ -56,7 +57,11 @@ class Main(Star):
         # 读取样式配置
         self.style = self.cfg.get("renderer_template", DEFAULT_TEMPLATE)
 
-        self.data_manager = DataManager()
+        self.data_manager = DataManager(
+            recent_dynamic_cache=self.cfg.get(
+                "recent_dynamic_cache", RECENT_DYNAMIC_CACHE
+            )
+        )
         self.renderer = Renderer(self, self.rai, self.style)
 
         # 优先使用 DataManager 中的凭据

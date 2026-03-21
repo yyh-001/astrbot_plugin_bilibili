@@ -67,6 +67,12 @@
         "hint": "每个UP主的单次动态推送数量限制",
         "default": 5
     },
+    "recent_dynamic_cache": {
+        "description": "recent_dynamic_cache",
+        "type": "int",
+        "hint": "动态缓存大小（recent_ids长度）",
+        "default": 4
+    },
     "plain_push_template": {
         "description": "纯文本推送消息模板",
         "type": "text",

@@ -15,7 +15,8 @@ class DataManager:
     负责管理插件的订阅数据，包括加载、保存和修改。
     """
 
-    def __init__(self):
+    def __init__(self, recent_dynamic_cache: int = RECENT_DYNAMIC_CACHE):
+        self.recent_dynamic_cache = recent_dynamic_cache
         standard_data_path = os.path.join(
             StarTools.get_data_dir(plugin_name="astrbot_plugin_bilibili"),
             "astrbot_plugin_bilibili.json",
@@ -183,7 +184,7 @@ class DataManager:
         """
         sub = self.get_subscription(sub_user, uid)
         if sub:
-            sub.record_dynamic(dyn_id, RECENT_DYNAMIC_CACHE)
+            sub.record_dynamic(dyn_id, self.recent_dynamic_cache)
             await self.save()
 
     async def update_live_status(self, sub_user: str, uid: int, is_live: bool):
