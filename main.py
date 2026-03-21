@@ -536,8 +536,7 @@ class Main(Star):
 
         # 测试命令需要每次基于当前代码重新构造消息，避免命中同 dyn_id 的历史缓存。
         await self.dynamic_listener._handle_new_dynamic(sub_user, render_data, None)
-
-        return None
+        event.stop_event()
 
     async def terminate(self):
         if (
