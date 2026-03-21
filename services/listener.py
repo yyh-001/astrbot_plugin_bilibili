@@ -150,6 +150,7 @@ class DynamicListener:
         if not targets:
             return
 
+        logger.info("UID任务开始: uid=%s targets=%s", uid, len(targets))
         try:
             dyn = await self.bili_client.get_latest_dynamics(uid)
         except asyncio.CancelledError:
@@ -395,6 +396,7 @@ class DynamicListener:
 
         cached = self.render_cache.get(dyn_id) if dyn_id else None
         if cached:
+            logger.debug("动态推送命中缓存: dyn_id=%s sub_user=%s", dyn_id, sub_user)
             await self._send_dynamic(sub_user, cached["chain"], cached["send_node"])
             return
 
@@ -406,6 +408,7 @@ class DynamicListener:
                 ls = self._compose_plain_push(payload)
             await self._send_dynamic(sub_user, ls, send_node_flag)
             self._cache_render(dyn_id, ls, send_node_flag)
+            logger.info("动态推送完成(纯文本): sub_user=%s dyn_id=%s", sub_user, dyn_id)
             return
 
         img_path = await self.renderer.render_dynamic(payload)
@@ -420,14 +423,22 @@ class DynamicListener:
             ls.append(Plain(f"\n{url}"))
             await self._send_dynamic(sub_user, ls, send_node_flag)
             self._cache_render(dyn_id, ls, send_node_flag)
+            logger.info(
+                "动态推送完成(图片): sub_user=%s dyn_id=%s",
+                sub_user,
+                dyn_id,
+            )
             return
 
-        logger.error("渲染图片失败，尝试发送纯文本消息")
+        logger.warning(
+            "渲染图片失败，降级纯文本推送: sub_user=%s dyn_id=%s", sub_user, dyn_id
+        )
         if self.plain_push_template:
             ls = self._compose_template_push(payload, render_fail=True)
         else:
             ls = self._compose_plain_push(payload, render_fail=True)
         await self._send_dynamic(sub_user, ls, send_node=True)
+        logger.info("动态推送完成(降级纯文本): sub_user=%s dyn_id=%s", sub_user, dyn_id)
 
     @staticmethod
     def _extract_group_session(sub_user: str) -> Optional[Tuple[str, str]]:
@@ -700,7 +711,8 @@ class DynamicListener:
             elif item_type == "DYNAMIC_TYPE_ARTICLE":
                 result = self._handle_article_dynamic(item, dyn_id, uid, filter_types)
             else:
-                result = DynamicParseResult.skip(dyn_id, "unsupported type")
+                # dyn_id记为None，避免未识别类型挤占正常动态缓存
+                result = DynamicParseResult.skip(None, "unsupported type")
 
             result_list.append(result)
 

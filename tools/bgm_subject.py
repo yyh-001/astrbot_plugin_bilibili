@@ -288,12 +288,14 @@ class BgmRecommendHotSubjectsTool(FunctionTool):
         search_filter = _build_search_filter(raw_filters)
         if "air_date" not in search_filter:
             search_filter["air_date"] = [f">={start_date}"]
+        normalized_limit = _normalize_limit(limit)
+        normalized_offset = _normalize_offset(offset)
         subjects = await client.search_subjects(
             keyword="",
             filter_payload=search_filter,
             sort="heat",
-            limit=_normalize_limit(limit),
-            offset=_normalize_offset(offset),
+            limit=normalized_limit,
+            offset=normalized_offset,
         )
         if not subjects:
             return "未找到符合条件的近期热门条目。可放宽筛选或扩大 months。"
