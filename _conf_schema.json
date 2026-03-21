@@ -14,7 +14,8 @@
     "bangumi_token": {
         "description": "bangumi_token",
         "type": "string",
-        "hint": "可选。bgm.tv Access Token。每日放送接口可不填，调用需要授权的接口时请填写。"
+        "hint": "可选。Bangumi Access Token。调用需要授权的接口时请填写。",
+        "invisible": true
     },
     "interval_secs": {
         "description": "interval_secs",

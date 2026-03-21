@@ -37,8 +37,8 @@ from .core.utils import create_qrcode, image_to_base64, is_valid_umo
 from .services.listener import DynamicListener
 from .services.renderer import Renderer
 from .services.subscription_service import SubscriptionService
-from .tools.bangumi import BangumiTool
 from .tools.bgm_daily import BgmDailyTool
+from .tools.bgm_subject import BgmAdvancedSubjectSearchTool, BgmRecommendHotSubjectsTool
 
 
 @register("astrbot_plugin_bilibili", "Soulter", "", "", "")
@@ -82,11 +82,18 @@ class Main(Star):
             bili_client=self.bili_client,
             parse_dynamics=self.dynamic_listener._parse_and_filter_dynamics,
         )
-        self.context.add_llm_tools(BangumiTool())
-        if self.bangumi_token:
-            self.context.add_llm_tools(BgmDailyTool(token=self.bangumi_token))
-        else:
-            logger.info("未配置 bangumi_token，跳过注册 BgmDailyTool。")
+        self.context.add_llm_tools(
+            BgmAdvancedSubjectSearchTool(
+                token=self.bangumi_token,
+            ),
+            BgmRecommendHotSubjectsTool(
+                token=self.bangumi_token,
+            ),
+            BgmDailyTool(
+                token=self.bangumi_token,
+            ),
+        )
+
         self._start_tasks()
 
     def _start_tasks(self):

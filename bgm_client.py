@@ -53,25 +53,35 @@ class BangumiApiClient:
         except json.JSONDecodeError as exc:
             raise ValueError(f"bgm.tv {endpoint} 响应不是合法 JSON") from exc
 
-    async def _request_json(
-        self, endpoint: str, params: dict[str, Any] | None = None
+    async def request_json(
+        self,
+        endpoint: str,
+        *,
+        method: str = "GET",
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
     ) -> Any:
         timeout = aiohttp.ClientTimeout(total=self._timeout_secs)
         url = f"{self._base_url}{endpoint}"
         async with aiohttp.ClientSession(
             timeout=timeout, headers=self._headers()
         ) as session:
-            async with session.get(url, params=params or {}) as resp:
+            async with session.request(
+                method=method,
+                url=url,
+                params=params or {},
+                json=json_body,
+            ) as resp:
                 body = await resp.text()
                 if resp.status != 200:
                     snippet = body[:MAX_ERROR_BODY_LEN]
                     raise RuntimeError(
-                        f"bgm.tv {endpoint} 请求失败: HTTP {resp.status}, body={snippet}"
+                        f"bgm.tv {method} {endpoint} 请求失败: HTTP {resp.status}, body={snippet}"
                     )
                 return self._decode_json_or_raise(body, endpoint)
 
     async def get_calendar(self) -> list[dict[str, Any]]:
-        payload = await self._request_json("/calendar")
+        payload = await self.request_json("/calendar")
         return self._ensure_list_payload(payload)
 
     async def get_episodes_page(
@@ -82,7 +92,7 @@ class BangumiApiClient:
         limit: int = EP_PAGE_SIZE,
         offset: int = 0,
     ) -> dict[str, Any]:
-        payload = await self._request_json(
+        payload = await self.request_json(
             "/v0/episodes",
             params={
                 "subject_id": subject_id,
@@ -94,3 +104,42 @@ class BangumiApiClient:
         if not isinstance(payload, dict):
             raise ValueError("bgm.tv /v0/episodes 响应格式错误：顶层不是对象")
         return payload
+
+    async def get_subject(self, subject_id: int) -> dict[str, Any]:
+        payload = await self.request_json(f"/v0/subjects/{subject_id}")
+        if not isinstance(payload, dict):
+            raise ValueError("bgm.tv /v0/subjects/{id} 响应格式错误：顶层不是对象")
+        return payload
+
+    async def get_subject_relations(self, subject_id: int) -> list[dict[str, Any]]:
+        payload = await self.request_json(f"/v0/subjects/{subject_id}/subjects")
+        if not isinstance(payload, list):
+            raise ValueError("bgm.tv /v0/subjects/{id}/subjects 响应格式错误：顶层不是数组")
+        return [item for item in payload if isinstance(item, dict)]
+
+    async def search_subjects(
+        self,
+        *,
+        keyword: str,
+        filter_payload: dict[str, Any] | None = None,
+        sort: str = "match",
+        limit: int = 5,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {"keyword": keyword}
+        if sort:
+            payload["sort"] = sort
+        if filter_payload:
+            payload["filter"] = filter_payload
+        response = await self.request_json(
+            "/v0/search/subjects",
+            method="POST",
+            params={"limit": limit, "offset": offset},
+            json_body=payload,
+        )
+        if not isinstance(response, dict):
+            raise ValueError("bgm.tv /v0/search/subjects 响应格式错误：顶层不是对象")
+        data = response.get("data")
+        if not isinstance(data, list):
+            raise ValueError("bgm.tv /v0/search/subjects 响应格式错误：data 不是数组")
+        return [item for item in data if isinstance(item, dict)]
