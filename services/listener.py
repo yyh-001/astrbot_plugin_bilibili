@@ -150,7 +150,6 @@ class DynamicListener:
         if not targets:
             return
 
-        logger.info("UID任务开始: uid=%s targets=%s", uid, len(targets))
         try:
             dyn = await self.bili_client.get_latest_dynamics(uid)
         except asyncio.CancelledError:
