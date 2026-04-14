@@ -2,7 +2,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 import aiohttp
 from astrbot.api import logger
-from bilibili_api import Credential, request_settings, user, video
+from bilibili_api import Credential, hot, request_settings, search, user, video
 from bilibili_api.utils.network import Api
 
 
@@ -119,6 +119,20 @@ class BiliClient:
         """
         return user.User(uid=uid, credential=self.credential)
 
+    @staticmethod
+    def _resolve_video_order(
+        order: str,
+    ) -> search.OrderVideo:
+        mapping = {
+            "totalrank": search.OrderVideo.TOTALRANK,
+            "click": search.OrderVideo.CLICK,
+            "pubdate": search.OrderVideo.PUBDATE,
+            "dm": search.OrderVideo.DM,
+            "stow": search.OrderVideo.STOW,
+            "scores": search.OrderVideo.SCORES,
+        }
+        return mapping.get(order.lower(), search.OrderVideo.TOTALRANK)
+
     async def get_video_info(self, bvid: str) -> Optional[Dict[str, Any]]:
         """
         获取视频的详细信息和在线观看人数。
@@ -130,6 +144,44 @@ class BiliClient:
             return {"info": info, "online": online}
         except Exception as e:
             logger.error(f"获取视频信息失败 (BVID: {bvid}): {e}")
+            return None
+
+    async def get_hot_videos(self, pn: int = 1, ps: int = 20) -> Optional[Dict[str, Any]]:
+        """
+        获取全站热门视频列表。
+        """
+        try:
+            self._apply_proxy()
+            return await hot.get_hot_videos(pn=pn, ps=ps)
+        except Exception as e:
+            logger.error(f"获取热门视频失败 (pn={pn}, ps={ps}): {e}")
+            return None
+
+    async def search_videos(
+        self,
+        keyword: str,
+        *,
+        order: str = "totalrank",
+        page: int = 1,
+        page_size: int = 20,
+        video_zone_type: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        按关键词搜索视频，并按指定排序返回结果。
+        """
+        try:
+            self._apply_proxy()
+            order_type = self._resolve_video_order(order)
+            return await search.search_by_type(
+                keyword=keyword,
+                search_type=search.SearchObjectType.VIDEO,
+                order_type=order_type,
+                page=page,
+                page_size=page_size,
+                video_zone_type=video_zone_type,
+            )
+        except Exception as e:
+            logger.error(f"搜索视频失败 (keyword={keyword}, order={order}): {e}")
             return None
 
     async def get_latest_dynamics(self, uid: int) -> Optional[Dict[str, Any]]:

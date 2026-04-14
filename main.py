@@ -40,6 +40,7 @@ from .services.renderer import Renderer
 from .services.subscription_service import SubscriptionService
 from .tools.bgm_daily import BgmDailyTool
 from .tools.bgm_subject import BgmAdvancedSubjectSearchTool, BgmRecommendHotSubjectsTool
+from .tools.bili_hot_video import BiliSearchHotVideosTool
 
 
 @register("astrbot_plugin_bilibili", "Soulter", "", "", "")
@@ -87,7 +88,7 @@ class Main(Star):
             bili_client=self.bili_client,
             parse_dynamics=self.dynamic_listener._parse_and_filter_dynamics,
         )
-        self.context.add_llm_tools(
+        llm_tools = (
             BgmAdvancedSubjectSearchTool(
                 token=self.bangumi_token,
             ),
@@ -97,7 +98,11 @@ class Main(Star):
             BgmDailyTool(
                 token=self.bangumi_token,
             ),
+            BiliSearchHotVideosTool(
+                bili_client=self.bili_client,
+            ),
         )
+        self.context.add_llm_tools(*llm_tools)
 
         self._start_tasks()
 
