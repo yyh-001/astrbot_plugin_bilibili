@@ -424,6 +424,45 @@ class DynamicListener:
             f"{content}"
         )
 
+    async def _get_image_captions(
+        self, image_urls: list[str], sub_user: str
+    ) -> list[str] | None:
+        astrbot_cfg = self.context.get_config()
+        provider_settings = astrbot_cfg.get("provider_settings", {})
+        caption_provider_id = (
+            provider_settings.get("default_image_caption_provider_id") or ""
+        ).strip()
+        if not caption_provider_id or not image_urls:
+            return None
+
+        caption_prompt = provider_settings.get(
+            "image_caption_prompt", "Please describe the image using Chinese."
+        )
+        provider_mgr = getattr(self.context, "provider_manager", None)
+        if not provider_mgr:
+            return None
+
+        caption_provider = await provider_mgr.get_provider_by_id(caption_provider_id)
+        if not caption_provider:
+            logger.warning("图片转述模型 %s 未找到，跳过转述。", caption_provider_id)
+            return None
+
+        captions = []
+        for img_url in image_urls:
+            try:
+                resp = await caption_provider.text_chat(
+                    prompt=caption_prompt,
+                    image_urls=[img_url],
+                )
+                cap = (getattr(resp, "completion_text", "") or "").strip()
+                if cap:
+                    captions.append(cap)
+                    logger.info("图片转述成功: %s -> %s", img_url[:60], cap[:80])
+            except Exception as e:
+                logger.warning("图片转述失败 %s: %s", img_url[:60], e)
+                captions.append("")
+        return captions
+
     async def _generate_ai_summary(self, sub_user: str, payload: Any) -> str:
         if not self.enable_ai_summary:
             return ""
@@ -439,16 +478,57 @@ class DynamicListener:
             if not provider_id:
                 logger.info("会话 %s 未配置聊天模型，已跳过动态摘要。", sub_user)
                 return ""
+
             image_urls = [
-                url.strip()
+                url.strip().replace("http://", "https://")
                 for url in getattr(payload, "image_urls", []) or []
                 if isinstance(url, str) and url.strip()
+                and not url.startswith("data:")
             ][:8]
-            llm_resp = await llm_generate(
-                chat_provider_id=provider_id,
-                prompt=self._build_ai_summary_prompt(payload),
-                image_urls=image_urls,
-            )
+
+            prompt_text = self._build_ai_summary_prompt(payload)
+
+            captions = await self._get_image_captions(image_urls, sub_user)
+
+            if captions:
+                caption_lines = "\n".join(
+                    f"[图片 {i+1}]: {c}" for i, c in enumerate(captions) if c
+                )
+                if caption_lines:
+                    prompt_text = f"{prompt_text}\n\n该动态包含以下图片：\n{caption_lines}"
+                logger.info(
+                    "AI摘要: 使用图片转述, prompt_len=%d, images=%d, captions=%d",
+                    len(prompt_text),
+                    len(image_urls),
+                    len(captions),
+                )
+                llm_resp = await llm_generate(
+                    chat_provider_id=provider_id,
+                    contexts=[
+                        UserMessageSegment(content=[TextPart(text=prompt_text)])
+                    ],
+                )
+            else:
+                user_parts: list = [TextPart(text=prompt_text)]
+                for idx, img_url in enumerate(image_urls, start=1):
+                    user_parts.append(
+                        ImageURLPart(
+                            image_url=ImageURLPart.ImageURL(
+                                url=img_url, id=f"dynamic-{idx}"
+                            )
+                        )
+                    )
+                logger.info(
+                    "AI摘要: 构造显式多模态消息, prompt_len=%d, images=%d, urls=%s",
+                    len(prompt_text),
+                    len(image_urls),
+                    image_urls,
+                )
+                llm_resp = await llm_generate(
+                    chat_provider_id=provider_id,
+                    contexts=[UserMessageSegment(content=user_parts)],
+                )
+
             return (getattr(llm_resp, "completion_text", "") or "").strip()
         except Exception as e:
             logger.error("生成动态 AI 摘要失败: %s\n%s", e, traceback.format_exc())
@@ -468,9 +548,10 @@ class DynamicListener:
             user_parts: list = [TextPart(text=self._build_ai_summary_prompt(payload))]
             for index, image_url in enumerate(
                 [
-                    url.strip()
+                    url.strip().replace("http://", "https://")
                     for url in getattr(payload, "image_urls", []) or []
                     if isinstance(url, str) and url.strip()
+                    and not url.startswith("data:")
                 ][:8],
                 start=1,
             ):
