@@ -7,8 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from astrbot.api import logger
 from astrbot.api.all import *
-from astrbot.api.event import MessageEventResult
-from astrbot.api.message_components import AtAll, File, Image, Node, Plain
+from astrbot.api.message_components import AtAll, File, Image, Plain
 
 from ..bili_client import BiliClient
 from ..core.constant import BANNER_PATH, LOGO_PATH
@@ -19,6 +18,11 @@ from ..core.utils import (
     image_to_base64,
     is_height_valid,
     render_text_to_plain,
+)
+from .dispatcher import (
+    NotificationCategory,
+    SubscriptionNotification,
+    SubscriptionNotificationDispatcher,
 )
 from .renderer import Renderer
 
@@ -47,12 +51,14 @@ class DynamicListener:
         data_manager: DataManager,
         bili_client: BiliClient,
         renderer: Renderer,
+        dispatcher: SubscriptionNotificationDispatcher,
         cfg: dict,
     ):
         self.context = context
         self.data_manager = data_manager
         self.bili_client = bili_client
         self.renderer = renderer
+        self.dispatcher = dispatcher
         self.interval_secs = max(1, int(cfg.get("interval_secs", 300)))
         self.task_gap_secs = self._parse_float(cfg.get("task_gap_secs"), 20, minimum=0)
         self.rai = cfg.get("rai", True)
@@ -359,21 +365,21 @@ class DynamicListener:
         return "\n".join(lines)
 
     async def _send_dynamic(
-        self, sub_user: str, chain_parts: list, send_node: bool = False
+        self,
+        sub_user: str,
+        chain_parts: list,
+        send_node: bool = False,
+        category: NotificationCategory = "dynamic",
+        dyn_id: Optional[str] = None,
     ):
-        if self.node or send_node:
-            qqNode = Node(
-                uin=0,
-                name="AstrBot",
-                content=chain_parts,
-            )
-            await self.context.send_message(
-                sub_user, MessageEventResult(chain=[qqNode])
-            )
-        else:
-            await self.context.send_message(
-                sub_user, MessageEventResult(chain=chain_parts).use_t2i(False)
-            )
+        notification = SubscriptionNotification(
+            sub_user=sub_user,
+            chain_parts=chain_parts,
+            send_node=self.node or send_node,
+            category=category,
+            dyn_id=dyn_id,
+        )
+        await self.dispatcher.publish(notification)
 
     def _cache_render(self, dyn_id: Optional[str], chain_parts: list, send_node: bool):
         """缓存渲染结果，避免同一动态在不同会话重复渲染。"""
@@ -395,8 +401,14 @@ class DynamicListener:
 
         cached = self.render_cache.get(dyn_id) if dyn_id else None
         if cached:
-            logger.debug("动态推送命中缓存: dyn_id=%s sub_user=%s", dyn_id, sub_user)
-            await self._send_dynamic(sub_user, cached["chain"], cached["send_node"])
+            logger.debug(f"动态推送命中缓存: dyn_id={dyn_id} sub_user={sub_user}")
+            await self._send_dynamic(
+                sub_user,
+                cached["chain"],
+                send_node=cached["send_node"],
+                category="dynamic",
+                dyn_id=dyn_id,
+            )
             return
 
         send_node_flag = self.node
@@ -405,9 +417,15 @@ class DynamicListener:
                 ls = self._compose_template_push(payload)
             else:
                 ls = self._compose_plain_push(payload)
-            await self._send_dynamic(sub_user, ls, send_node_flag)
+            await self._send_dynamic(
+                sub_user,
+                ls,
+                send_node=send_node_flag,
+                category="dynamic",
+                dyn_id=dyn_id,
+            )
             self._cache_render(dyn_id, ls, send_node_flag)
-            logger.info("动态推送完成(纯文本): sub_user=%s dyn_id=%s", sub_user, dyn_id)
+            logger.info(f"动态推送完成(纯文本): sub_user={sub_user} dyn_id={dyn_id}")
             return
 
         img_path = await self.renderer.render_dynamic(payload)
@@ -420,24 +438,28 @@ class DynamicListener:
                 filename = f"bilibili_dynamic_{timestamp}.jpg"
                 ls = [File(file=img_path, name=filename)]
             ls.append(Plain(f"\n{url}"))
-            await self._send_dynamic(sub_user, ls, send_node_flag)
-            self._cache_render(dyn_id, ls, send_node_flag)
-            logger.info(
-                "动态推送完成(图片): sub_user=%s dyn_id=%s",
+            await self._send_dynamic(
                 sub_user,
-                dyn_id,
+                ls,
+                send_node=send_node_flag,
+                category="dynamic",
+                dyn_id=dyn_id,
             )
+            self._cache_render(dyn_id, ls, send_node_flag)
+            logger.info(f"动态推送完成(图片): sub_user={sub_user} dyn_id={dyn_id}")
             return
 
         logger.warning(
-            "渲染图片失败，降级纯文本推送: sub_user=%s dyn_id=%s", sub_user, dyn_id
+            f"渲染图片失败，降级纯文本推送: sub_user={sub_user} dyn_id={dyn_id}"
         )
         if self.plain_push_template:
             ls = self._compose_template_push(payload, render_fail=True)
         else:
             ls = self._compose_plain_push(payload, render_fail=True)
-        await self._send_dynamic(sub_user, ls, send_node=True)
-        logger.info("动态推送完成(降级纯文本): sub_user=%s dyn_id=%s", sub_user, dyn_id)
+        await self._send_dynamic(
+            sub_user, ls, send_node=True, category="dynamic", dyn_id=dyn_id
+        )
+        logger.info(f"动态推送完成(降级纯文本): sub_user={sub_user} dyn_id={dyn_id}")
 
     @staticmethod
     def _extract_group_session(sub_user: str) -> Optional[Tuple[str, str]]:
@@ -528,25 +550,19 @@ class DynamicListener:
             ls = self._compose_plain_push(payload)
             if with_atall:
                 ls = self._prepend_atall(ls)
-            await self.context.send_message(
-                sub_user, MessageEventResult(chain=ls).use_t2i(False)
-            )
+            await self._send_dynamic(sub_user, ls, category="live")
             return
         img_path = await self.renderer.render_dynamic(payload)
         if img_path:
             image_chain = [Image.fromFileSystem(img_path), Plain(f"\n{payload.url}")]
             if with_atall:
                 image_chain = self._prepend_atall(image_chain)
-            await self.context.send_message(
-                sub_user, MessageEventResult(chain=image_chain).use_t2i(False)
-            )
+            await self._send_dynamic(sub_user, image_chain, category="live")
             return
         ls = self._compose_plain_push(payload, render_fail=True)
         if with_atall:
             ls = self._prepend_atall(ls)
-        await self.context.send_message(
-            sub_user, MessageEventResult(chain=ls).use_t2i(False)
-        )
+        await self._send_dynamic(sub_user, ls, category="live")
 
     async def _should_send_live_atall(self, sub_user: str, enabled: bool) -> bool:
         if not enabled:
@@ -554,18 +570,18 @@ class DynamicListener:
 
         group_ctx = self._extract_group_session(sub_user)
         if not group_ctx:
-            logger.info("live_atall 仅支持群聊会话，当前会话: %s", sub_user)
+            logger.info(f"live_atall 仅支持群聊会话，当前会话: {sub_user}")
             return False
 
         platform_id, group_id = group_ctx
         platform_inst = self.context.get_platform_inst(platform_id)
         if not platform_inst:
-            logger.warning("live_atall 失败：找不到平台实例 %s", platform_id)
+            logger.warning(f"live_atall 失败：找不到平台实例 {platform_id}")
             return False
 
         client = platform_inst.get_client()
         if not client or not hasattr(client, "call_action"):
-            logger.warning("live_atall 失败：平台 %s 不支持 call_action", platform_id)
+            logger.warning(f"live_atall 失败：平台 {platform_id} 不支持 call_action")
             return False
 
         group_id_param: int | str = int(group_id) if group_id.isdigit() else group_id
@@ -582,14 +598,11 @@ class DynamicListener:
         self_remain = int(self_remain_value or 0)
 
         if not can_at_all:
-            logger.info("群 %s 当前不允许 @全体成员", group_id)
+            logger.info(f"群 {group_id} 当前不允许 @全体成员")
             return False
         if group_remain < MIN_AT_ALL_REMAINING or self_remain < MIN_AT_ALL_REMAINING:
             logger.info(
-                "群 %s @全体次数不足: group=%s, self=%s",
-                group_id,
-                group_remain,
-                self_remain,
+                f"群 {group_id} @全体次数不足: group={group_remain}, self={self_remain}"
             )
             return False
         return True

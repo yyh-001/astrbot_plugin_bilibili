@@ -28,6 +28,7 @@ DATA_PATH = "data/astrbot_plugin_bilibili.json"
 DEFAULT_CFG = {
     "bili_sub_list": {},  # sub_user -> [{"uid": "uid", "last": "last_dynamic_id", ...}]
     "credential": None,
+    "last_success_sub_notify_ts": 0,
 }
 
 # ==================== 模板注册表 ====================
@@ -73,3 +74,5 @@ def get_template_names() -> list:
 MAX_ATTEMPTS = 3
 RETRY_DELAY = 2
 RECENT_DYNAMIC_CACHE = 4
+RECONNECT_SILENT_THRESHOLD_SECS = 21600
+RECONNECT_SILENT_PADDING_SECS = 60

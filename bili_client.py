@@ -146,7 +146,9 @@ class BiliClient:
             logger.error(f"获取视频信息失败 (BVID: {bvid}): {e}")
             return None
 
-    async def get_hot_videos(self, pn: int = 1, ps: int = 20) -> Optional[Dict[str, Any]]:
+    async def get_hot_videos(
+        self, pn: int = 1, ps: int = 20
+    ) -> Optional[Dict[str, Any]]:
         """
         获取全站热门视频列表。
         """

@@ -114,7 +114,9 @@ class BangumiApiClient:
     async def get_subject_relations(self, subject_id: int) -> list[dict[str, Any]]:
         payload = await self.request_json(f"/v0/subjects/{subject_id}/subjects")
         if not isinstance(payload, list):
-            raise ValueError("bgm.tv /v0/subjects/{id}/subjects 响应格式错误：顶层不是数组")
+            raise ValueError(
+                "bgm.tv /v0/subjects/{id}/subjects 响应格式错误：顶层不是数组"
+            )
         return [item for item in payload if isinstance(item, dict)]
 
     async def search_subjects(

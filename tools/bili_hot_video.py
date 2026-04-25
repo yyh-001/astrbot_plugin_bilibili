@@ -104,9 +104,7 @@ def _build_line(index: int, item: dict[str, Any], *, source: str) -> str:
         stat = item.get("stat", {})
         bvid = item.get("bvid") or "未知BV"
         play = _format_count(stat.get("view") if isinstance(stat, dict) else None)
-        danmaku = _format_count(
-            stat.get("danmaku") if isinstance(stat, dict) else None
-        )
+        danmaku = _format_count(stat.get("danmaku") if isinstance(stat, dict) else None)
         like = _format_count(stat.get("like") if isinstance(stat, dict) else None)
         pubdate = _format_pubdate(item.get("pubdate"))
     else:
@@ -193,9 +191,7 @@ class BiliSearchHotVideosTool(FunctionTool):
         normalized_keyword = _normalize_keyword(keyword)
         normalized_limit = _normalize_limit(limit)
         normalized_page = _normalize_page(page)
-        normalized_sort = _normalize_sort(
-            sort, has_keyword=bool(normalized_keyword)
-        )
+        normalized_sort = _normalize_sort(sort, has_keyword=bool(normalized_keyword))
 
         if normalized_keyword:
             payload = await self.bili_client.search_videos(
@@ -210,9 +206,7 @@ class BiliSearchHotVideosTool(FunctionTool):
             items = _extract_search_items(payload)
             if not items:
                 return "未找到符合条件的视频。可以换个关键词或排序方式。"
-            title = (
-                f"B站热门视频搜索结果（关键词：{normalized_keyword}，排序：{normalized_sort}）"
-            )
+            title = f"B站热门视频搜索结果（关键词：{normalized_keyword}，排序：{normalized_sort}）"
             return _format_result(title, items[:normalized_limit], source="search")
 
         payload = await self.bili_client.get_hot_videos(

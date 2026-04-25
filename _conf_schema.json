@@ -30,6 +30,12 @@
         "hint": "相邻两个UP主任务的最小间隔，秒数",
         "default": 20
     },
+    "reconnect_silent": {
+        "description": "reconnect_silent",
+        "type": "bool",
+        "hint": "重连时静默：启动时若长时间未成功推送订阅通知，则先静默一段时间以消化积压。",
+        "default": false
+    },
     "rai": {
         "description": "render_as_image",
         "type": "bool",

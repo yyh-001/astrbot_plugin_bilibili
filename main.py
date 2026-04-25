@@ -3,6 +3,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from typing import List, Tuple
 
 from astrbot.api import AstrBotConfig, logger
@@ -28,6 +29,8 @@ from .core.constant import (
     LIVE_ATALL_OPTION,
     LOGO_PATH,
     RECENT_DYNAMIC_CACHE,
+    RECONNECT_SILENT_PADDING_SECS,
+    RECONNECT_SILENT_THRESHOLD_SECS,
     VALID_FILTER_TYPES,
     VALID_SUB_OPTIONS,
     get_template_names,
@@ -35,6 +38,7 @@ from .core.constant import (
 from .core.data_manager import DataManager
 from .core.models import RenderPayload, SubscriptionRecord
 from .core.utils import create_qrcode, image_to_base64, is_valid_umo
+from .services.dispatcher import SubscriptionNotificationDispatcher
 from .services.listener import DynamicListener
 from .services.renderer import Renderer
 from .services.subscription_service import SubscriptionService
@@ -64,6 +68,11 @@ class Main(Star):
             )
         )
         self.renderer = Renderer(self, self.rai, self.style)
+        self._last_notify_write_ts = self.data_manager.get_last_success_sub_notify_ts()
+        self.notification_dispatcher = SubscriptionNotificationDispatcher(
+            context=self.context,
+            on_sent=self._on_subscription_notification_sent,
+        )
 
         # 优先使用 DataManager 中的凭据
         saved_credential = self.data_manager.get_credential()
@@ -81,6 +90,7 @@ class Main(Star):
             data_manager=self.data_manager,
             bili_client=self.bili_client,
             renderer=self.renderer,
+            dispatcher=self.notification_dispatcher,
             cfg=self.cfg,
         )
         self.subscription_service = SubscriptionService(
@@ -103,6 +113,7 @@ class Main(Star):
             ),
         )
         self.context.add_llm_tools(*llm_tools)
+        self._configure_reconnect_silent()
 
         self._start_tasks()
 
@@ -112,6 +123,47 @@ class Main(Star):
             self.dynamic_listener_task.cancel()
 
         self.dynamic_listener_task = asyncio.create_task(self.dynamic_listener.start())
+
+    def _compute_reconnect_silent_duration(self) -> int:
+        uid_count = len(self.dynamic_listener._build_uid_targets())
+        interval_secs = max(float(self.cfg.get("interval_secs")), 0.0)
+        task_gap_secs = max(float(self.cfg.get("task_gap_secs")), 0.0)
+        duration = (
+            interval_secs + task_gap_secs * uid_count + RECONNECT_SILENT_PADDING_SECS
+        )
+        return max(int(duration), 1)
+
+    def _configure_reconnect_silent(self) -> None:
+        if not bool(self.cfg.get("reconnect_silent", False)):
+            self.notification_dispatcher.set_silent_until_ts(0)
+            return
+
+        last_success_ts = self.data_manager.get_last_success_sub_notify_ts()
+        if last_success_ts <= 0:
+            logger.info("重连静默未触发：缺少历史推送成功时间。")
+            return
+
+        now_ts = int(time.time())
+        idle_secs = now_ts - last_success_ts
+        if idle_secs <= RECONNECT_SILENT_THRESHOLD_SECS:
+            logger.info(
+                f"重连静默未触发：距上次成功推送仅 {idle_secs} 秒（阈值 {RECONNECT_SILENT_THRESHOLD_SECS} 秒）。"
+            )
+            return
+
+        silent_duration = self._compute_reconnect_silent_duration()
+        silent_until_ts = now_ts + silent_duration
+        self.notification_dispatcher.set_silent_until_ts(silent_until_ts)
+        logger.warning(
+            f"检测到长时间未成功推送订阅通知（{idle_secs} 秒），进入静默模式 {silent_duration} 秒。"
+        )
+
+    async def _on_subscription_notification_sent(self, _notification: object) -> None:
+        now_ts = int(time.time())
+        if now_ts == self._last_notify_write_ts:
+            return
+        self._last_notify_write_ts = now_ts
+        await self.data_manager.set_last_success_sub_notify_ts(now_ts)
 
     @staticmethod
     def _parse_sub_args(input_text: GreedyStr) -> tuple[List[str], List[str], bool]:

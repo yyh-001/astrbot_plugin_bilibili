@@ -31,6 +31,7 @@ class DataManager:
         self.path = standard_data_path
         self.data = self._load_data()
         self._normalize_subscriptions()
+        self._normalize_runtime_fields()
 
     def _load_data(self) -> Dict[str, Any]:
         """
@@ -64,7 +65,7 @@ class DataManager:
                 try:
                     records.append(SubscriptionRecord.from_dict(raw_sub))
                 except ValueError:
-                    logger.warning("跳过无效订阅记录: %s", raw_sub)
+                    logger.warning(f"跳过无效订阅记录: {raw_sub}")
                     continue
             if records:
                 normalized[sub_user] = records
@@ -77,6 +78,10 @@ class DataManager:
             for sub_user, records in self.get_all_subscriptions().items()
         }
         return payload
+
+    def _normalize_runtime_fields(self) -> None:
+        parsed_ts = int(self.data.get("last_success_sub_notify_ts", 0))
+        self.data["last_success_sub_notify_ts"] = max(parsed_ts, 0)
 
     @staticmethod
     def _write_text(path: str, content: str) -> None:
@@ -160,6 +165,17 @@ class DataManager:
         获取保存的凭据。
         """
         return self.data.get("credential")
+
+    def get_last_success_sub_notify_ts(self) -> int:
+        parsed_ts = int(self.data.get("last_success_sub_notify_ts", 0))
+        return max(parsed_ts, 0)
+
+    async def set_last_success_sub_notify_ts(self, ts: int) -> None:
+        next_ts = max(int(ts), 0)
+        if self.get_last_success_sub_notify_ts() == next_ts:
+            return
+        self.data["last_success_sub_notify_ts"] = next_ts
+        await self.save()
 
     async def set_credential(self, credential_data: Dict[str, Any] | None):
         """
